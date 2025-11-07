@@ -51,32 +51,100 @@ local function playUiSfx(name, speed)
 end
 
 -- Find target anchors for coins and diamonds
-local function getCoinAnchor()
-	local currencyGui = playerGui:FindFirstChild("Currency")
-	if not currencyGui then
+local function findTextLabel(container, predicate)
+	if not container then
 		return nil
 	end
 
-	for _, obj in ipairs(currencyGui:GetDescendants()) do
-		if obj:IsA("TextLabel") and CollectionService:HasTag(obj, "Coin") then
+	for _, obj in ipairs(container:GetDescendants()) do
+		if obj:IsA("TextLabel") and predicate(obj) then
 			return obj
 		end
 	end
 	return nil
 end
 
-local function getDiamondAnchor()
-	local currencyGui = playerGui:FindFirstChild("Currency")
-	if not currencyGui then
+local function ensureFallbackAnchor(name, parent, defaultPosition)
+	parent = parent or playerGui
+	if not parent then
 		return nil
 	end
 
-	for _, obj in ipairs(currencyGui:GetDescendants()) do
-		if obj:IsA("TextLabel") and CollectionService:HasTag(obj, "Diamond") then
-			return obj
-		end
+	local existing = parent:FindFirstChild(name)
+	if existing and existing:IsA("Frame") then
+		return existing
 	end
-	return nil
+
+	local anchor = Instance.new("Frame")
+	anchor.Name = name
+	anchor.BackgroundTransparency = 1
+	anchor.Size = UDim2.fromOffset(1, 1)
+	anchor.AnchorPoint = Vector2.new(0.5, 0.5)
+	anchor.Position = defaultPosition or UDim2.fromScale(0.5, 0.42)
+	anchor.Parent = parent
+	return anchor
+end
+
+local function getCoinAnchor()
+	local currencyGui = playerGui:FindFirstChild("Currency")
+	-- Preferred: tagged label
+	local anchor = findTextLabel(currencyGui, function(obj)
+		return CollectionService:HasTag(obj, "Coin")
+	end)
+	if anchor then
+		return anchor
+	end
+
+	-- Fallbacks: look for labels named/containing "coin"
+	anchor = findTextLabel(currencyGui, function(obj)
+		local name = string.lower(obj.Name)
+		return name == "coin" or name == "coins" or string.find(name, "coin", 1, true) ~= nil
+	end)
+	if anchor then
+		return anchor
+	end
+
+	anchor = findTextLabel(currencyGui, function(obj)
+		local text = string.lower(tostring(obj.Text))
+		return text ~= "" and string.find(text, "coin", 1, true) ~= nil
+	end)
+	if anchor then
+		return anchor
+	end
+
+	-- Final fallback: create a hidden anchor near the top-left area
+	return ensureFallbackAnchor("_CoinAnimationAnchor", currencyGui or playerGui, UDim2.new(0, 140, 0, 65))
+end
+
+local function getDiamondAnchor()
+	local currencyGui = playerGui:FindFirstChild("Currency")
+	-- Preferred: tagged label
+	local anchor = findTextLabel(currencyGui, function(obj)
+		return CollectionService:HasTag(obj, "Diamond")
+	end)
+	if anchor then
+		return anchor
+	end
+
+	-- Fallback: look for labels named/containing "diamond"
+	anchor = findTextLabel(currencyGui, function(obj)
+		local name = string.lower(obj.Name)
+		return name == "diamond" or name == "diamonds" or string.find(name, "diamond", 1, true) ~= nil
+	end)
+	if anchor then
+		return anchor
+	end
+
+	anchor = findTextLabel(currencyGui, function(obj)
+		local text = string.lower(tostring(obj.Text))
+		return text ~= "" and string.find(text, "diamond", 1, true) ~= nil
+	end)
+	if anchor then
+		return anchor
+	end
+
+	-- Final fallback: dedicated diamond anchor on the right side to avoid overlapping with coins
+	return ensureFallbackAnchor("_DiamondAnimationAnchor", currencyGui or playerGui, UDim2.new(1, -140, 0, 65))
 end
 
 -- Events for communicating coin arrivals
@@ -255,18 +323,22 @@ function RewardAnimations.spawnRewardBurst(amount, rewardType, sourcePosition, s
 	-- Handle source position (use parent's coordinate system)
 	local sz = parent.AbsoluteSize
 	local centerX, centerY
+	-- Offset the origin slightly based on reward type so text pops in distinct spots
+	local defaultOffsetX = (rewardType == "Coins") and -80 or 80
+	local defaultOffsetY = (rewardType == "Coins") and 0 or 32
+
 	if sourceButton then
 		local buttonPos = sourceButton.AbsolutePosition
 		local buttonSize = sourceButton.AbsoluteSize
-		centerX = buttonPos.X + buttonSize.X / 2
-		centerY = buttonPos.Y + buttonSize.Y / 2
+		centerX = buttonPos.X + buttonSize.X / 2 + defaultOffsetX
+		centerY = buttonPos.Y + buttonSize.Y / 2 + defaultOffsetY
 	elseif sourcePosition then
-		centerX = sourcePosition.X
-		centerY = sourcePosition.Y
+		centerX = sourcePosition.X + defaultOffsetX
+		centerY = sourcePosition.Y + defaultOffsetY
 	else
 		-- Default to center of parent
-		centerX = sz.X * 0.5
-		centerY = sz.Y * 0.42
+		centerX = sz.X * 0.5 + defaultOffsetX
+		centerY = sz.Y * 0.42 + defaultOffsetY
 	end
 	local center = UDim2.fromOffset(centerX, centerY)
 
@@ -296,7 +368,7 @@ function RewardAnimations.spawnRewardBurst(amount, rewardType, sourcePosition, s
 	txt.TextSize = 28
 	txt.TextColor3 = (rewardType == "Coins") and Color3.fromRGB(255, 235, 120) or Color3.fromRGB(120, 235, 255)
 	txt.AnchorPoint = Vector2.new(0.5, 0.5)
-	local belowCenter = UDim2.fromOffset(centerX, centerY + 48)
+	local belowCenter = UDim2.fromOffset(centerX, centerY + ((rewardType == "Coins") and 48 or 16))
 	txt.Position = belowCenter
 	txt.ZIndex = 21
 	txt.Parent = parent

@@ -296,6 +296,13 @@ function Grapple.tryFire(character, cameraCFrame)
 	if Grapple.isActive(character) then
 		return false
 	end
+	
+	-- Stop flying if active before using hook
+	local Fly = require(ReplicatedStorage.Movement.Fly)
+	if Fly and Fly.isActive and Fly.isActive(character) then
+		Fly.stop(character)
+	end
+	
 	-- CRITICAL: If player is currently climbing, stop the climb state immediately
 	-- This ensures clean transition from climb to hook without conflicts
 	if Config.ClimbMantleIntegrationEnabled then

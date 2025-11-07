@@ -24,6 +24,7 @@ local Grapple = require(ReplicatedStorage.Movement.Grapple)
 local VerticalClimb = require(ReplicatedStorage.Movement.VerticalClimb)
 local LedgeHang = require(ReplicatedStorage.Movement.LedgeHang)
 local FX = require(ReplicatedStorage.Movement.FX)
+local Fly = require(ReplicatedStorage.Movement.Fly)
 
 -- One-shot FX helper: plays ReplicatedStorage/FX/<name> once at character position
 local function playOneShotFx(character, fxName, customPosition)
@@ -391,6 +392,14 @@ local function setupCharacter(character)
 	local rollPending = false
 	local jumpLoopTrack = nil
 	humanoid.StateChanged:Connect(function(old, new)
+		-- Don't interfere with flying state
+		if Fly.isActive(character) and new ~= Enum.HumanoidStateType.Physics then
+			-- Prevent state changes while flying
+			if humanoid:GetState() ~= Enum.HumanoidStateType.Physics then
+				humanoid:ChangeState(Enum.HumanoidStateType.Physics)
+			end
+			return
+		end
 		if new == Enum.HumanoidStateType.Freefall then
 			local root = character:FindFirstChild("HumanoidRootPart")
 			-- Track peak height during this airborne phase for reliable roll on high launches
@@ -1310,6 +1319,9 @@ player.CharacterAdded:Connect(function()
 end)
 player.CharacterRemoving:Connect(function(char)
 	BunnyHop.teardown(char)
+	if Fly.isActive(char) then
+		Fly.stop(char)
+	end
 end)
 
 -- Ensure camera align caches base motors on spawn
@@ -1424,7 +1436,58 @@ UserInputService.InputBegan:Connect(function(input, gpe)
 			end
 		end
 	elseif input.KeyCode == Enum.KeyCode.E then
-		-- Zipline takes priority when near a rope
+		-- PRIORITY 1: Flying (highest priority - check first)
+		if Fly.isActive(character) then
+			print("[Fly] Stopping flight")
+			Fly.stop(character)
+		else
+			-- Check if user wants to start flying (hold Shift+E or just E when not near zipline/climbable)
+			local shouldFly = true
+			
+			-- Don't start flying if near zipline or actively climbing
+			if Zipline.isActive(character) or Zipline.isNear(character) then
+				shouldFly = false
+			end
+			
+			if shouldFly then
+				print("[Fly] Starting flight")
+				-- Stop other movement systems that might interfere
+				if Climb.isActive(character) then
+					Climb.stop(character)
+					cleanupClimbAnimation(character)
+				end
+				if WallRun.isActive(character) then
+					WallRun.stop(character)
+				end
+				if Zipline.isActive(character) then
+					Zipline.stop(character)
+				end
+				if LedgeHang.isActive(character) then
+					LedgeHang.stop(character, true)
+				end
+				if Grapple.isActive(character) then
+					Grapple.stop(character)
+				end
+				if WallJump.isWallSliding and WallJump.isWallSliding(character) then
+					WallJump.stopSlide(character)
+				end
+				-- Ensure humanoid is ready
+				local humanoid = character:FindFirstChildOfClass("Humanoid")
+				if humanoid then
+					local success = Fly.start(character)
+					if success then
+						print("[Fly] Flight started successfully")
+					else
+						print("[Fly] Failed to start flight")
+					end
+				else
+					print("[Fly] No humanoid found")
+				end
+				return -- Exit early, don't process zipline/climb
+			end
+		end
+		
+		-- PRIORITY 2: Zipline takes priority when near a rope
 		if Zipline.isActive(character) then
 			Zipline.stop(character)
 		elseif Zipline.isNear(character) then
@@ -1445,7 +1508,7 @@ UserInputService.InputBegan:Connect(function(input, gpe)
 			stopConflictingAnimations(character, "zipline")
 			Zipline.tryStart(character)
 		else
-			-- Toggle climb on climbable walls
+			-- PRIORITY 3: Toggle climb on climbable walls
 			if Climb.isActive(character) then
 				Climb.stop(character)
 				cleanupClimbAnimation(character)
@@ -1474,8 +1537,19 @@ UserInputService.InputBegan:Connect(function(input, gpe)
 			if Grapple.isActive(character) then
 				Grapple.stop(character)
 			else
+				-- Stop flying if active before using hook
+				if Fly.isActive(character) then
+					Fly.stop(character)
+				end
 				Grapple.tryFire(character, cam.CFrame)
 			end
+		end
+	elseif input.KeyCode == Enum.KeyCode.T then
+		-- Respawn at checkpoint
+		local remotes = ReplicatedStorage:FindFirstChild("Remotes")
+		local respawnRemote = remotes and remotes:FindFirstChild("RespawnAtCheckpoint")
+		if respawnRemote then
+			respawnRemote:FireServer()
 		end
 	elseif input.KeyCode == Enum.KeyCode.Space then
 		local humanoid = getHumanoid(character)
@@ -1797,6 +1871,18 @@ RunService.RenderStepped:Connect(function(dt)
 		return
 	end
 
+	-- Maintain flying state if active (prevent other systems from interfering)
+	if Fly.isActive(character) then
+		-- Ensure humanoid stays in physics state
+		if humanoid:GetState() ~= Enum.HumanoidStateType.Physics then
+			humanoid:ChangeState(Enum.HumanoidStateType.Physics)
+		end
+		humanoid:SetStateEnabled(Enum.HumanoidStateType.Freefall, false)
+		humanoid:SetStateEnabled(Enum.HumanoidStateType.FallingDown, false)
+		humanoid:SetStateEnabled(Enum.HumanoidStateType.Jumping, false)
+		humanoid.AutoRotate = false
+	end
+
 	local speed = root.AssemblyLinearVelocity.Magnitude
 	if humanoid.MoveDirection.Magnitude > 0 then
 		Momentum.addFromSpeed(state.momentum, speed)
@@ -1814,7 +1900,8 @@ RunService.RenderStepped:Connect(function(dt)
 
 	-- Always update air animations to handle both starting and stopping
 	local isInParkourAction = (
-		Climb.isActive(character)
+		Fly.isActive(character)
+		or Climb.isActive(character)
 		or WallRun.isActive(character)
 		or Zipline.isActive(character)
 		or VerticalClimb.isActive(character)
@@ -2441,7 +2528,10 @@ RunService.RenderStepped:Connect(function(dt)
 	) or 0
 	if (not state.wallAttachLockedUntil) or (os.clock() >= acUnlock) then
 		local allowAC = true
-		if state._suppressAirControlUntil and os.clock() < state._suppressAirControlUntil then
+		-- Don't apply air control if flying
+		if Fly.isActive(character) then
+			allowAC = false
+		elseif state._suppressAirControlUntil and os.clock() < state._suppressAirControlUntil then
 			allowAC = false
 		end
 		if allowAC then
@@ -2467,24 +2557,29 @@ RunService.RenderStepped:Connect(function(dt)
 		anyActionActive = true
 	end
 	if not anyActionActive then
-		-- Safety: ensure collisions are restored after any action that might have disabled them
-		pcall(function()
-			local Abilities = require(ReplicatedStorage.Movement.Abilities)
-			if Abilities and Abilities.ensureCollisions then
-				Abilities.ensureCollisions(character)
+		-- Don't restore state if flying is active
+		if Fly.isActive(character) then
+			-- Keep flying state intact
+		else
+			-- Safety: ensure collisions are restored after any action that might have disabled them
+			pcall(function()
+				local Abilities = require(ReplicatedStorage.Movement.Abilities)
+				if Abilities and Abilities.ensureCollisions then
+					Abilities.ensureCollisions(character)
+				end
+			end)
+			-- Restore autorotate if disabled by previous action
+			if humanoid.AutoRotate == false then
+				humanoid.AutoRotate = true
 			end
-		end)
-		-- Restore autorotate if disabled by previous action
-		if humanoid.AutoRotate == false then
-			humanoid.AutoRotate = true
-		end
-		-- Restore safe humanoid state from RunningNoPhysics if not in any action
-		local hs = humanoid:GetState()
-		if hs == Enum.HumanoidStateType.RunningNoPhysics then
-			if humanoid.FloorMaterial == Enum.Material.Air then
-				humanoid:ChangeState(Enum.HumanoidStateType.Freefall)
-			else
-				humanoid:ChangeState(Enum.HumanoidStateType.Running)
+			-- Restore safe humanoid state from RunningNoPhysics if not in any action
+			local hs = humanoid:GetState()
+			if hs == Enum.HumanoidStateType.RunningNoPhysics then
+				if humanoid.FloorMaterial == Enum.Material.Air then
+					humanoid:ChangeState(Enum.HumanoidStateType.Freefall)
+				else
+					humanoid:ChangeState(Enum.HumanoidStateType.Running)
+				end
 			end
 		end
 		-- Stop frozen zero-speed tracks if any
@@ -2866,12 +2961,19 @@ PadTriggered.OnClientEvent:Connect(function(newVel)
 	state.pendingPadTick = os.clock()
 end)
 
--- Apply climb velocities before physics integrates gravity
+-- Apply climb and fly velocities before physics integrates gravity
 RunService.Stepped:Connect(function(_time, dt)
 	local character = player.Character
 	if not character then
 		return
 	end
+	
+	-- Apply flying first (highest priority)
+	if Fly.isActive(character) then
+		Fly.update(character, dt)
+		return
+	end
+	
 	-- Apply zipline/ climb velocities before physics
 	if Zipline.isActive(character) then
 		Zipline.maintain(character, dt)

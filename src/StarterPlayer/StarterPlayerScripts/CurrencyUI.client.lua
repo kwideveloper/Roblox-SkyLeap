@@ -203,19 +203,23 @@ CurrencyUpdated.OnClientEvent:Connect(function(payload)
 	end
 
 	local coinsTarget = nil
+	local diamondsTarget = nil
+	
+	-- Update target values
 	if payload.Coins ~= nil then
 		coinsTarget = tonumber(payload.Coins) or state.coins
 		state.coins = coinsTarget
 	end
 	if payload.Diamonds ~= nil then
-		local target = tonumber(payload.Diamonds) or state.diamonds
-		state.diamonds = target
-		animateDiamondsTo(target)
+		diamondsTarget = tonumber(payload.Diamonds) or state.diamonds
+		state.diamonds = diamondsTarget
 	end
+	
+	-- Handle awarded coins animation
 	if payload.AwardedCoins and (payload.AwardedCoins > 0) and not payload.FromPlaytime then
 		-- Visual feedback for awarded coins using global system (skip if from playtime rewards)
 		RewardAnimations.spawnCoinBurst(payload.AwardedCoins)
-		-- FIXED: Don't animate numbers immediately for StyleCommit - let flying coins handle it
+		-- FIXED: Don't animate numbers immediately - let flying coins handle it
 		-- Just update the target silently like playtime rewards to prevent double counting
 		state.coins = coinsTarget
 	else
@@ -228,6 +232,23 @@ CurrencyUpdated.OnClientEvent:Connect(function(payload)
 			state.coins = coinsTarget
 		end
 	end
+	
+	-- Handle awarded diamonds animation (similar to coins)
+	if payload.AwardedDiamonds and (payload.AwardedDiamonds > 0) and not payload.FromPlaytime then
+		-- Visual feedback for awarded diamonds using global system
+		RewardAnimations.spawnDiamondBurst(payload.AwardedDiamonds)
+		-- Update the target silently, let flying diamonds handle the counting
+		state.diamonds = diamondsTarget
+	else
+		-- For normal updates without burst, animate the number
+		if diamondsTarget ~= nil and not payload.FromPlaytime then
+			animateDiamondsTo(diamondsTarget)
+		elseif payload.FromPlaytime then
+			-- For playtime rewards, just update silently
+			state.diamonds = diamondsTarget
+		end
+	end
+	
 	updateAll()
 end)
 

@@ -30,6 +30,8 @@ local function defaultProfile()
 		},
 		progression = {
 			unlockedAbilities = {},
+			completedLevels = {}, -- [levelNumber] = true
+			levelTimes = {}, -- [levelNumber] = bestTime (seconds)
 		},
 		cosmetics = {
 			owned = {},
@@ -73,7 +75,9 @@ local function migrate(profile)
 	profile.stats.timePlayedMinutes = profile.stats.timePlayedMinutes or 0
 	profile.stats.coins = profile.stats.coins or 0
 	profile.stats.diamonds = profile.stats.diamonds or 0
-	profile.progression = profile.progression or { unlockedAbilities = {} }
+	profile.progression = profile.progression or { unlockedAbilities = {}, completedLevels = {}, levelTimes = {} }
+	profile.progression.completedLevels = profile.progression.completedLevels or {}
+	profile.progression.levelTimes = profile.progression.levelTimes or {}
 	profile.cosmetics = profile.cosmetics
 		or { owned = {}, equipped = { outfitId = nil, trailId = nil, handTrailId = nil } }
 	profile.purchases = profile.purchases or { developerProducts = {}, gamePasses = {} }

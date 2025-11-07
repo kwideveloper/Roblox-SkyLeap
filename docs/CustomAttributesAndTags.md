@@ -461,7 +461,171 @@ activeAnimate.Parent = button
 
 ---
 
-## 14. Tag vs Attribute Migration Guide
+## 14. Killer Tag System
+
+**Parts/Models with Damage/Death Effects:**
+- `Killer` (Tag) - Kills or damages players when touched
+
+**Killer Attributes:**
+- `Damage` (number, optional)
+  *If set, applies this amount of damage to the player's health when touched.*
+  *If not set or set to 0/invalid, instant kill (sets health to 0).*
+
+**Behavior:**
+- Works on both BaseParts and Models
+- If tagged on a Model, all BaseParts within the model become killers
+- Instant kill if no Damage attribute is present
+- If Damage attribute exists and is a valid positive number, applies that damage
+- If Damage value is invalid (0 or negative), treats as instant kill
+
+**Example Setup:**
+```lua
+-- Create an instant-kill part
+local killerPart = Instance.new("Part")
+killerPart.Name = "InstantKiller"
+killerPart.Position = Vector3.new(0, 5, 0)
+killerPart.Size = Vector3.new(10, 1, 10)
+killerPart.Anchored = true
+killerPart.Parent = workspace
+CollectionService:AddTag(killerPart, "Killer")
+-- No Damage attribute = instant kill
+
+-- Create a damage-dealing part (deals 30 damage)
+local damagePart = Instance.new("Part")
+damagePart.Name = "DamageDealer"
+damagePart.Position = Vector3.new(0, 10, 0)
+damagePart.Size = Vector3.new(10, 1, 10)
+damagePart.Anchored = true
+damagePart:SetAttribute("Damage", 30) -- Deals 30 damage
+damagePart.Parent = workspace
+CollectionService:AddTag(damagePart, "Killer")
+
+-- Create a killer model (all parts inside become killers)
+local killerModel = Instance.new("Model")
+killerModel.Name = "KillerZone"
+killerModel.Parent = workspace
+CollectionService:AddTag(killerModel, "Killer")
+-- All BaseParts inside this model will kill/damage players on touch
+```
+
+**Notes:**
+- The system automatically handles touch detection for both individual parts and models
+- For models, the tag can be placed on the model itself, and all BaseParts within will become killers
+- Damage is applied immediately upon touch
+- Players will die if damage brings health to 0 or below
+
+---
+
+## 15. Animated Tag System
+
+**Models with Animation Effects:**
+- `Animated` (Tag) - Enables automatic animation system for objects named "Start" and "Finish"
+
+**Animated Attributes:**
+- `AnimationStyle` (string, optional)
+  *Easing style for the animation. Options: Linear, Quad, Cubic, Quart, Quint, Sine, Elastic, Back, Bounce*
+  *Default: "Quad"*
+
+- `Duration` (number, optional)
+  *Animation duration in seconds.*
+  *Default: 1*
+
+- `Loop` (bool, optional)
+  *Whether the animation should loop (go from Start to Finish and back to Start repeatedly).*
+  *Default: true (loops infinitely)*
+
+- `Delay` (number, optional)
+  *Delay before starting the animation in seconds.*
+  *Default: 0*
+
+**Behavior:**
+- Works on Models with the "Animated" tag
+- Inside the model, must have two objects named "Start" and "Finish"
+- "Start" object (part or model) will animate towards the position/rotation of "Finish" object
+- "Start" and "Finish" can be BaseParts or Models
+- For Models, the PrimaryPart (or first BasePart) will be animated
+- Animation loops by default (Start → Finish → Start → ...)
+- If Loop is false, animation only plays once (Start → Finish)
+
+**Example Setup:**
+```lua
+-- Create an animated platform
+local animatedModel = Instance.new("Model")
+animatedModel.Name = "MovingPlatform"
+animatedModel.Parent = workspace
+
+-- Add the Animated tag
+CollectionService:AddTag(animatedModel, "Animated")
+
+-- Create the platform that will move (named "Start")
+local platform = Instance.new("Part")
+platform.Name = "Start"
+platform.Position = Vector3.new(0, 10, 0) -- Initial position
+platform.Size = Vector3.new(4, 1, 4)
+platform.Anchored = true
+platform.Parent = animatedModel
+
+-- Create Finish reference (target position - can be invisible)
+local finishPart = Instance.new("Part")
+finishPart.Name = "Finish"
+finishPart.Position = Vector3.new(0, 10, 20) -- Target position
+finishPart.Size = Vector3.new(4, 1, 4) -- Same size as Start (not required)
+finishPart.Anchored = true
+finishPart.Transparency = 1 -- Make invisible (optional)
+finishPart.CanCollide = false -- Optional: disable collision
+finishPart.Parent = animatedModel
+
+-- Optional: Configure animation
+animatedModel:SetAttribute("Duration", 2) -- 2 seconds to reach Finish
+animatedModel:SetAttribute("AnimationStyle", "Sine") -- Smooth sine animation
+animatedModel:SetAttribute("Loop", true) -- Loop back to Start position
+```
+
+**Advanced Example (Rotating Object):**
+```lua
+local animatedModel = Instance.new("Model")
+animatedModel.Name = "RotatingObstacle"
+animatedModel.Parent = workspace
+CollectionService:AddTag(animatedModel, "Animated")
+
+-- The object that will rotate (named "Start")
+local rotatingPart = Instance.new("Part")
+rotatingPart.Name = "Start"
+rotatingPart.Position = Vector3.new(0, 10, 0)
+rotatingPart.Rotation = Vector3.new(0, 0, 0) -- Initial rotation
+rotatingPart.Size = Vector3.new(4, 4, 4)
+rotatingPart.Anchored = true
+rotatingPart.Parent = animatedModel
+
+-- Finish reference with target rotation
+local finishPart = Instance.new("Part")
+finishPart.Name = "Finish"
+finishPart.Position = Vector3.new(0, 10, 0) -- Same position
+finishPart.Rotation = Vector3.new(0, 180, 0) -- Target rotation (180 degrees)
+finishPart.Size = Vector3.new(4, 4, 4)
+finishPart.Anchored = true
+finishPart.Transparency = 1 -- Make invisible (optional)
+finishPart.CanCollide = false
+finishPart.Parent = animatedModel
+
+-- Configure for one-way rotation (no loop)
+animatedModel:SetAttribute("Duration", 3)
+animatedModel:SetAttribute("AnimationStyle", "Elastic")
+animatedModel:SetAttribute("Loop", false) -- Only rotate once (no return)
+```
+
+**Notes:**
+- The system automatically detects models with the "Animated" tag
+- "Start" and "Finish" objects must be descendants of the tagged model (can be nested)
+- Position and Rotation are animated; Size is not animated (to avoid scaling issues)
+- For Models, the PrimaryPart property should be set for best results
+- If PrimaryPart is not set, the first BasePart found will be used
+- Animation starts immediately unless Delay is set
+- Loop works by playing forward animation, then backward animation, then repeating
+
+---
+
+## 16. Tag vs Attribute Migration Guide
 
 **Recent Updates - Tags vs Attributes:**
 
@@ -614,6 +778,111 @@ CollectionService:AddTag(hookPart, "Hookable")
 -- - Clean up when the hook is destroyed or out of range
 ```
 
+
+---
+
+## 17. Level Management System Tags & Attributes
+
+**Level System (Models/Folders in workspace.Levels/):**
+
+### Level Attributes (on the level Model/Folder):
+- `LevelId` (string) - **REQUIRED**
+  *Unique identifier for the level (e.g., "Level_1", "Desert_Temple")*
+
+- `LevelName` (string) - **REQUIRED**
+  *Display name shown to players (e.g., "The Beginning", "Desert Temple")*
+
+- `LevelNumber` (number) - **REQUIRED**
+  *Sequential number for unlocking system (1, 2, 3, ...)*
+
+- `Difficulty` (string, optional)
+  *Level difficulty: "Easy", "Medium", "Hard", "Extreme". Default: "Easy"*
+
+- `RequiredLevel` (number, optional)
+  *Minimum completed level number required to unlock this level. If not set, defaults to previous level. Level 1 is always unlocked.*
+
+- `CoinsReward` (number, optional)
+  *Coins awarded on first completion. Default: 0*
+
+- `DiamondsReward` (number, optional)
+  *Diamonds awarded on first completion. Default: 0*
+
+- `XPReward` (number, optional)
+  *XP awarded on first completion. Default: 0*
+
+### Level Spawn Points (BasePart/Model):
+- `LevelSpawn` (Tag)
+  *Marks this object as a spawn point for the level. Players spawn here when entering the level.*
+
+**Alternative**: Name a child "Spawn" (BasePart or Model) in the level folder.
+
+### Level Finish Points (BasePart/Model):
+- `LevelFinish` (Tag)
+  *Marks this object as a finish point for the level. Touching this completes the level.*
+
+**Alternative**: Name a child "Finish" (BasePart or Model) in the level folder.
+
+**Level Structure Example:**
+```
+Workspace/
+  Levels/ (Folder - must be named exactly "Levels")
+    Level_1/ (Model or Folder - both work!)
+      Attributes:
+        - LevelId = "Level_1"
+        - LevelName = "The Beginning"
+        - LevelNumber = 1
+        - CoinsReward = 100
+      
+      Spawn/ (BasePart with "LevelSpawn" tag)
+      Finish/ (BasePart with "LevelFinish" tag)
+      [Level content...]
+```
+
+**Note**: Level containers can be either **Model** or **Folder**. Folder is simpler and recommended unless you need Model's PrimaryPart feature.
+
+**Behavior:**
+- Players automatically spawn at Level 1 when joining
+- Level completion unlocks the next level
+- First completion awards rewards (coins/diamonds/XP)
+- Best completion time is tracked and saved
+- Works seamlessly with Checkpoint System
+
+**Example Setup:**
+```lua
+-- Create a level container (Model or Folder both work!)
+local level = Instance.new("Folder") -- or Instance.new("Model")
+level.Name = "Level_1"
+level.Parent = workspace.Levels
+
+-- Set level attributes
+level:SetAttribute("LevelId", "Level_1")
+level:SetAttribute("LevelName", "The Beginning")
+level:SetAttribute("LevelNumber", 1)
+level:SetAttribute("Difficulty", "Easy")
+level:SetAttribute("CoinsReward", 100)
+level:SetAttribute("DiamondsReward", 5)
+
+-- Create spawn point
+local spawn = Instance.new("Part")
+spawn.Name = "Spawn"
+spawn.Position = Vector3.new(0, 5, 0)
+spawn.Size = Vector3.new(4, 1, 4)
+spawn.Anchored = true
+spawn.Parent = level
+CollectionService:AddTag(spawn, "LevelSpawn")
+
+-- Create finish point
+local finish = Instance.new("Part")
+finish.Name = "Finish"
+finish.Position = Vector3.new(100, 5, 0)
+finish.Size = Vector3.new(10, 10, 10)
+finish.BrickColor = BrickColor.new("Bright green")
+finish.Anchored = true
+finish.Parent = level
+CollectionService:AddTag(finish, "LevelFinish")
+```
+
+**For more details, see: [LevelManagementSystem.md](./LevelManagementSystem.md)**
 
 ---
 
