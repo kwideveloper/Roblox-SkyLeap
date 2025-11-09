@@ -16,6 +16,11 @@ local LOADING = {} -- Track profiles currently being loaded to prevent duplicate
 local SAVE_QUEUE = {} -- Queue for DataStore operations to prevent overload
 local MAX_CONCURRENT_SAVES = 1 -- Maximum concurrent DataStore operations (reduced to prevent overload)
 
+local function getUtcDateKey()
+	local utc = os.date("!*t")
+	return string.format("%04d%02d%02d", utc.year, utc.month, utc.day)
+end
+
 local function defaultProfile()
 	return {
 		version = 1,
@@ -27,6 +32,15 @@ local function defaultProfile()
 			timePlayedMinutes = 0,
 			coins = 0,
 			diamonds = 0,
+			winsDaily = 0,
+			killsDaily = 0,
+			lastDailyReset = nil, -- YYYY-MM-DD
+			killStreak = 0,
+			bestKillStreak = 0,
+			donatedRobuxTotal = 0,
+			matchTimeSeconds = 0,
+			winsTotal = 0,
+			killsTotal = 0,
 		},
 		progression = {
 			unlockedAbilities = {},
@@ -75,6 +89,15 @@ local function migrate(profile)
 	profile.stats.timePlayedMinutes = profile.stats.timePlayedMinutes or 0
 	profile.stats.coins = profile.stats.coins or 0
 	profile.stats.diamonds = profile.stats.diamonds or 0
+	profile.stats.winsDaily = profile.stats.winsDaily or 0
+	profile.stats.killsDaily = profile.stats.killsDaily or 0
+	profile.stats.lastDailyReset = profile.stats.lastDailyReset or nil
+	profile.stats.killStreak = profile.stats.killStreak or 0
+	profile.stats.bestKillStreak = profile.stats.bestKillStreak or 0
+	profile.stats.donatedRobuxTotal = profile.stats.donatedRobuxTotal or 0
+	profile.stats.matchTimeSeconds = profile.stats.matchTimeSeconds or 0
+	profile.stats.winsTotal = profile.stats.winsTotal or 0
+	profile.stats.killsTotal = profile.stats.killsTotal or 0
 	profile.progression = profile.progression or { unlockedAbilities = {}, completedLevels = {}, levelTimes = {} }
 	profile.progression.completedLevels = profile.progression.completedLevels or {}
 	profile.progression.levelTimes = profile.progression.levelTimes or {}
@@ -252,6 +275,9 @@ local function shouldSave(userId)
 		if coinChange >= CRITICAL_SAVE_THRESHOLD or diamondChange >= CRITICAL_SAVE_THRESHOLD then
 			return true, "critical_changes"
 		end
+		if pending.leaderboardDirty then
+			return true, "leaderboard_dirty"
+		end
 	end
 
 	return false, "no_need"
@@ -286,12 +312,26 @@ local function applyChanges(userId, changes)
 			profile.rewards.playtimeClaimed[index] = value
 		end
 	end
+	if changes.stats then
+		for field, value in pairs(changes.stats) do
+			profile.stats[field] = value
+		end
+	end
+	if changes.statsIncrement then
+		for field, delta in pairs(changes.statsIncrement) do
+			local current = tonumber(profile.stats[field] or 0) or 0
+			profile.stats[field] = current + delta
+		end
+	end
 
 	-- Track pending changes for batching
 	PENDING_CHANGES[userId] = PENDING_CHANGES[userId] or {}
 	local pending = PENDING_CHANGES[userId]
 	pending.coins = (pending.coins or 0) + (changes.coins or 0)
 	pending.diamonds = (pending.diamonds or 0) + (changes.diamonds or 0)
+	if changes.markLeaderboardDirty then
+		pending.leaderboardDirty = true
+	end
 
 	-- Check if we should save now
 	local shouldSaveNow, reason = shouldSave(userId)
@@ -392,6 +432,121 @@ function PlayerProfile.getBalances(userId)
 	local coins = tonumber((prof.stats and prof.stats.coins) or 0) or 0
 	local diamonds = tonumber((prof.stats and prof.stats.diamonds) or 0) or 0
 	return coins, diamonds
+end
+
+local function ensureDaily(stats)
+	local today = getUtcDateKey()
+	if stats.lastDailyReset ~= today then
+		stats.lastDailyReset = today
+		stats.winsDaily = 0
+		stats.killsDaily = 0
+		return true
+	end
+	return false
+end
+
+function PlayerProfile.updateMatchStats(userId, params)
+	params = params or {}
+	userId = tostring(userId)
+	local profile = PlayerProfile.load(userId)
+	local stats = profile.stats
+	ensureDaily(stats)
+
+	local winsDaily = stats.winsDaily or 0
+	local killsDaily = stats.killsDaily or 0
+	local streak = stats.killStreak or 0
+	local bestStreak = stats.bestKillStreak or 0
+	local matchTime = stats.matchTimeSeconds or 0
+
+	if params.kills then
+		killsDaily += params.kills
+	end
+	if params.win then
+		winsDaily += params.win
+	end
+	if params.resetStreak then
+		streak = 0
+	end
+	if params.addToStreak then
+		streak += params.addToStreak
+	end
+	if params.matchSeconds then
+		matchTime += params.matchSeconds
+	end
+	local winsTotal = stats.winsTotal or 0
+	if params.win then
+		winsTotal += params.win
+	end
+	local killsTotal = stats.killsTotal or 0
+	if params.kills then
+		killsTotal += params.kills
+	end
+
+	bestStreak = math.max(bestStreak, streak)
+
+	stats.winsDaily = winsDaily
+	stats.killsDaily = killsDaily
+	stats.killStreak = streak
+	stats.bestKillStreak = bestStreak
+	stats.matchTimeSeconds = matchTime
+	stats.winsTotal = winsTotal
+	stats.killsTotal = killsTotal
+
+	applyChanges(userId, {
+		stats = {
+			winsDaily = winsDaily,
+			killsDaily = killsDaily,
+			lastDailyReset = stats.lastDailyReset,
+			killStreak = streak,
+			bestKillStreak = bestStreak,
+			matchTimeSeconds = matchTime,
+			winsTotal = winsTotal,
+			killsTotal = killsTotal,
+		},
+		markLeaderboardDirty = true,
+	})
+
+	return {
+		winsDaily = winsDaily,
+		killsDaily = killsDaily,
+		killStreak = streak,
+		bestKillStreak = bestStreak,
+		matchTimeSeconds = matchTime,
+		lastDailyReset = stats.lastDailyReset,
+		winsTotal = winsTotal,
+		killsTotal = killsTotal,
+	}
+end
+
+function PlayerProfile.resetDailyStats(userId)
+	userId = tostring(userId)
+	local profile = PlayerProfile.load(userId)
+	local stats = profile.stats
+	if ensureDaily(stats) then
+		applyChanges(userId, {
+			stats = {
+				winsDaily = stats.winsDaily,
+				killsDaily = stats.killsDaily,
+				lastDailyReset = stats.lastDailyReset,
+			},
+		})
+	end
+end
+
+function PlayerProfile.addDonationRobux(userId, amount)
+	userId = tostring(userId)
+	amount = tonumber(amount) or 0
+	if amount <= 0 then
+		return 0
+	end
+	local profile = PlayerProfile.load(userId)
+	local total = (profile.stats.donatedRobuxTotal or 0) + amount
+	profile.stats.donatedRobuxTotal = total
+	applyChanges(userId, {
+		stats = { donatedRobuxTotal = total },
+		markLeaderboardDirty = true,
+	})
+	return total
 end
 
 -- OPTIMIZED: Force save for significant coin additions, batch small ones

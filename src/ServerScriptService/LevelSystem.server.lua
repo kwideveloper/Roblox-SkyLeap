@@ -27,6 +27,8 @@ local CollectionService = game:GetService("CollectionService")
 
 local PlayerProfile = require(ServerScriptService:WaitForChild("PlayerProfile"))
 
+local BOMB_TAG_ACTIVE_ATTRIBUTE = "BombTagActive"
+
 -- Configuration
 local LEVELS_FOLDER_NAME = "Levels"
 local SPAWN_TAG = "LevelSpawn"
@@ -251,6 +253,10 @@ end
 -- Spawn player at a level
 local function spawnPlayerAtLevel(player, levelId)
 	if not player or not levelId then
+		return false
+	end
+
+	if player:GetAttribute(BOMB_TAG_ACTIVE_ATTRIBUTE) then
 		return false
 	end
 
@@ -687,6 +693,10 @@ end
 Players.PlayerAdded:Connect(function(player)
 	player.CharacterAdded:Connect(function(character)
 		task.wait(0.5) -- Wait for character to fully load
+
+		if player:GetAttribute(BOMB_TAG_ACTIVE_ATTRIBUTE) then
+			return
+		end
 
 		-- Spawn at first available level (Level 1)
 		local levels = getAllLevels()

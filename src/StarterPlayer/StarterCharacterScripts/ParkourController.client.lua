@@ -377,9 +377,22 @@ local function getHumanoid(character)
 	return character:WaitForChild("Humanoid")
 end
 
-local function setupCharacter(character)
+	local function setupCharacter(character)
 	local humanoid = getHumanoid(character)
-	humanoid.WalkSpeed = Config.BaseWalkSpeed
+	-- Check if player has the bomb (for speed boost on spawn)
+	local bombTagState = ReplicatedStorage:FindFirstChild("BombTagState")
+	local bombHolder = bombTagState and bombTagState:FindFirstChild("BombHolder")
+	local hasBomb = bombHolder and bombHolder.Value == player.Name
+	local speedMultiplier = 1
+	if hasBomb then
+		local success, config = pcall(function()
+			return require(ReplicatedStorage:WaitForChild("BombTag"):WaitForChild("Config"))
+		end)
+		if success and config then
+			speedMultiplier = config.BombHolderSpeedMultiplier or 1
+		end
+	end
+	humanoid.WalkSpeed = Config.BaseWalkSpeed * speedMultiplier
 	-- Preload configured animations on character spawn to avoid first-play hitches
 	task.spawn(function()
 		Animations.preload()
@@ -1336,8 +1349,14 @@ UserInputService.InputBegan:Connect(function(input, gpe)
 	local character = getCharacter()
 
 	if input.KeyCode == Enum.KeyCode.Q then
+		-- Check if bomb tag is active (infinite stamina)
+		local bombTagState = ReplicatedStorage:FindFirstChild("BombTagState")
+		local isActive = bombTagState and bombTagState:FindFirstChild("IsActive")
+		local isBombTagActive = isActive and isActive.Value or false
+		
 		-- Dash: only spend stamina if dash actually triggers (respects cooldown)
-		if state.stamina.current >= Config.DashStaminaCost then
+		-- Skip stamina check if bomb tag is active (infinite stamina)
+		if isBombTagActive or state.stamina.current >= Config.DashStaminaCost then
 			local character = getCharacter()
 			if not character then
 				return
@@ -1359,7 +1378,10 @@ UserInputService.InputBegan:Connect(function(input, gpe)
 			local grounded = humanoid.FloorMaterial ~= Enum.Material.Air
 			local didDash = Abilities.tryDash(character)
 			if didDash then
-				state.stamina.current = math.max(0, state.stamina.current - Config.DashStaminaCost)
+				-- Only drain stamina if bomb tag is not active
+				if not isBombTagActive then
+					state.stamina.current = math.max(0, state.stamina.current - Config.DashStaminaCost)
+				end
 				DashVfx.playFor(character, Config.DashVfxDuration)
 				-- Play FX based on dash type
 				FX.playDash(character, not grounded) -- true for air dash
@@ -1406,9 +1428,15 @@ UserInputService.InputBegan:Connect(function(input, gpe)
 						and ((Config.SlideRequireSprint ~= false and sprinting) or (Config.SlideRequireSprint == false and isMoving))
 						and Abilities.isSlideReady()
 					then
-						-- Consume stamina for slide
-						local staminaCost = Config.SlideStaminaCost or 12
-						state.stamina.current = math.max(0, state.stamina.current - staminaCost)
+						-- Consume stamina for slide (skip if bomb tag is active)
+						local bombTagState = ReplicatedStorage:FindFirstChild("BombTagState")
+						local isActive = bombTagState and bombTagState:FindFirstChild("IsActive")
+						local isBombTagActive = isActive and isActive.Value or false
+						
+						if not isBombTagActive then
+							local staminaCost = Config.SlideStaminaCost or 12
+							state.stamina.current = math.max(0, state.stamina.current - staminaCost)
+						end
 
 						local endFn = Abilities.slide(character)
 						if type(endFn) == "function" then
@@ -2018,6 +2046,23 @@ RunService.RenderStepped:Connect(function(dt)
 		-- Skip any WalkSpeed overrides while crawling
 	end
 	if not state.sliding and not isCrawlingNow then
+		-- Check if player has the bomb (for speed boost)
+		local bombTagState = ReplicatedStorage:FindFirstChild("BombTagState")
+		local bombHolder = bombTagState and bombTagState:FindFirstChild("BombHolder")
+		local hasBomb = bombHolder and bombHolder.Value == player.Name
+		local BombTagConfig = nil
+		local speedMultiplier = 1
+		if hasBomb then
+			-- Get bomb tag config for speed multiplier
+			local success, config = pcall(function()
+				return require(ReplicatedStorage:WaitForChild("BombTag"):WaitForChild("Config"))
+			end)
+			if success and config then
+				BombTagConfig = config
+				speedMultiplier = config.BombHolderSpeedMultiplier or 1
+			end
+		end
+		
 		local isMoving = (humanoid.MoveDirection and humanoid.MoveDirection.Magnitude > 0) or false
 		if state.sprintHeld and isMoving then
 			if not state.stamina.isSprinting then
@@ -2029,10 +2074,11 @@ RunService.RenderStepped:Connect(function(dt)
 			else
 				-- ramp up while holding sprint
 				local t0 = state._sprintRampT0 or os.clock()
-				local base = state._sprintBaseSpeed or Config.BaseWalkSpeed
+				local base = (state._sprintBaseSpeed or Config.BaseWalkSpeed) * speedMultiplier
+				local targetSprint = Config.SprintWalkSpeed * speedMultiplier
 				local dur = math.max(0.01, Config.SprintAccelSeconds or 0.3)
 				local alpha = math.clamp((os.clock() - t0) / dur, 0, 1)
-				humanoid.WalkSpeed = base + (Config.SprintWalkSpeed - base) * alpha
+				humanoid.WalkSpeed = base + (targetSprint - base) * alpha
 			end
 		else
 			if state.stamina.isSprinting then
@@ -2040,9 +2086,10 @@ RunService.RenderStepped:Connect(function(dt)
 				local t0 = state._sprintDecelT0 or os.clock()
 				state._sprintDecelT0 = t0
 				local cur = humanoid.WalkSpeed
+				local targetBase = Config.BaseWalkSpeed * speedMultiplier
 				local dur = math.max(0.01, Config.SprintDecelSeconds or 0.2)
 				local alpha = math.clamp((os.clock() - t0) / dur, 0, 1)
-				humanoid.WalkSpeed = cur + (Config.BaseWalkSpeed - cur) * alpha
+				humanoid.WalkSpeed = cur + (targetBase - cur) * alpha
 				if alpha >= 1 then
 					Stamina.setSprinting(state.stamina, false)
 					state._sprintRampT0 = nil
@@ -2050,8 +2097,8 @@ RunService.RenderStepped:Connect(function(dt)
 					state._sprintBaseSpeed = nil
 				end
 			else
-				-- ensure at base
-				humanoid.WalkSpeed = Config.BaseWalkSpeed
+				-- ensure at base (with bomb multiplier if applicable)
+				humanoid.WalkSpeed = Config.BaseWalkSpeed * speedMultiplier
 				state._sprintRampT0 = nil
 				state._sprintDecelT0 = nil
 				state._sprintBaseSpeed = nil
@@ -2084,13 +2131,29 @@ RunService.RenderStepped:Connect(function(dt)
 	end
 	local stillSprinting
 	do
-		local _cur, s = Stamina.tickWithGate(
-			state.stamina,
-			dt,
-			allowRegen,
-			(humanoid.MoveDirection and humanoid.MoveDirection.Magnitude > 0)
-		)
-		stillSprinting = s
+		-- Check if bomb tag is active (infinite stamina)
+		local bombTagState = ReplicatedStorage:FindFirstChild("BombTagState")
+		local isActive = bombTagState and bombTagState:FindFirstChild("IsActive")
+		local isBombTagActive = isActive and isActive.Value or false
+		
+		-- Only tick stamina if bomb tag is not active
+		local _cur, s
+		if not isBombTagActive then
+			_cur, s = Stamina.tickWithGate(
+				state.stamina,
+				dt,
+				allowRegen,
+				(humanoid.MoveDirection and humanoid.MoveDirection.Magnitude > 0)
+			)
+			state.stamina.current = _cur
+			state.stamina.isSprinting = s
+			stillSprinting = s
+		else
+			-- Infinite stamina: keep at max
+			state.stamina.current = Config.StaminaMax
+			state.stamina.isSprinting = state.stamina.isSprinting -- Keep sprint state
+			stillSprinting = state.stamina.isSprinting
+		end
 	end
 	if not state.sliding and not isCrawlingNow then
 		if not stillSprinting and humanoid.WalkSpeed ~= Config.BaseWalkSpeed then
@@ -2100,8 +2163,12 @@ RunService.RenderStepped:Connect(function(dt)
 
 	-- Audio managed by AudioManager.client.lua
 
-	-- Wall slide stamina drain (half sprint rate) while active
-	if WallJump.isWallSliding and WallJump.isWallSliding(character) then
+	-- Wall slide stamina drain (half sprint rate) while active (skip if bomb tag is active)
+	local bombTagState = ReplicatedStorage:FindFirstChild("BombTagState")
+	local isActive = bombTagState and bombTagState:FindFirstChild("IsActive")
+	local isBombTagActive = isActive and isActive.Value or false
+	
+	if not isBombTagActive and WallJump.isWallSliding and WallJump.isWallSliding(character) then
 		local drain = (Config.WallSlideDrainPerSecond or (Config.SprintDrainPerSecond * 0.5)) * dt
 		state.stamina.current = math.max(0, state.stamina.current - drain)
 		if state.stamina.current <= 0 then
@@ -2114,7 +2181,18 @@ RunService.RenderStepped:Connect(function(dt)
 
 	-- Publish client state for HUD
 	if state.staminaValue then
-		state.staminaValue.Value = state.stamina.current
+		-- Check if bomb tag is active (infinite stamina)
+		local bombTagState = ReplicatedStorage:FindFirstChild("BombTagState")
+		local isActive = bombTagState and bombTagState:FindFirstChild("IsActive")
+		local isBombTagActive = isActive and isActive.Value or false
+		
+		-- For infinite stamina during bomb tag, set to max
+		if isBombTagActive then
+			state.staminaValue.Value = Config.StaminaMax
+			state.stamina.current = Config.StaminaMax
+		else
+			state.staminaValue.Value = state.stamina.current
+		end
 	end
 	if state.speedValue then
 		state.speedValue.Value = speed

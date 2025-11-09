@@ -90,6 +90,23 @@ ensureRemoteFunction(remotesFolder, "EquipHandTrail")
 ensureRemoteFunction(remotesFolder, "GetHandTrailData")
 ensureRemoteEvent(remotesFolder, "HandTrailEquipped")
 
+-- Bomb Tag system remotes
+ensureRemoteEvent(remotesFolder, "BombTagGameStart")
+ensureRemoteEvent(remotesFolder, "BombTagCountdownUpdate")
+ensureRemoteEvent(remotesFolder, "BombTagBombAssigned")
+ensureRemoteEvent(remotesFolder, "BombTagBombTimerUpdate")
+ensureRemoteEvent(remotesFolder, "BombTagPlayerEliminated")
+ensureRemoteEvent(remotesFolder, "BombTagGameEnd")
+ensureRemoteEvent(remotesFolder, "BombTagBombPassed")
+ensureRemoteEvent(remotesFolder, "BombTagPlatformPrompt")
+ensureRemoteEvent(remotesFolder, "BombTagReadyStatus")
+ensureRemoteEvent(remotesFolder, "BombTagReadyWarning")
+ensureRemoteEvent(remotesFolder, "BombTagReadyToggle")
+ensureRemoteEvent(remotesFolder, "BombTagScoreboardUpdate")
+
+-- Global leaderboards
+ensureRemoteEvent(remotesFolder, "LeaderboardsUpdate")
+
 -- TEMPORARY: Anti-cheat remotes disabled for debugging
 -- if RunService:IsStudio() then
 -- 	-- Anti-cheat debug remotes (DEVELOPMENT ONLY)
