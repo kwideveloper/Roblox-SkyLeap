@@ -75,8 +75,6 @@ type ManagerState = {
 local BombMatchManager = {}
 BombMatchManager.__index = BombMatchManager
 
-local singleton: any = nil
-
 local function requireConfig(moduleScript: ModuleScript)
 	local ok, result = pcall(require, moduleScript)
 	if not ok then
@@ -183,6 +181,18 @@ local function deepCloneArray<T>(array: { T }): { T }
 		cloned[index] = value
 	end
 	return cloned
+end
+
+local function cloneMetadata(metadata)
+	if not metadata then
+		return {}
+	end
+
+	local copy = {}
+	for key, value in pairs(metadata) do
+		copy[key] = value
+	end
+	return copy
 end
 
 local function newState(): ManagerState
@@ -408,6 +418,7 @@ function ManagerMethods:_scheduleRespawn(playerState, delay)
 end
 
 function ManagerMethods:_broadcastScoreboard(payload, targetPlayers)
+	payload = self:_attachMetadata(payload)
 	if targetPlayers then
 		for _, player in ipairs(targetPlayers) do
 			if player and player.Parent then
@@ -435,7 +446,7 @@ function ManagerMethods:_scoreboardPayload(active, showPoints, teams)
 		return entries
 	end
 
-	return {
+	local payload = {
 		active = active,
 		showReadiness = false,
 		showPoints = showPoints,
@@ -446,6 +457,7 @@ function ManagerMethods:_scoreboardPayload(active, showPoints, teams)
 		team1 = serializeTeam(teams.Left),
 		team2 = serializeTeam(teams.Right),
 	}
+	return self:_attachMetadata(payload)
 end
 
 function ManagerMethods:_collectTeamEntries()
@@ -773,46 +785,52 @@ function ManagerMethods:_normalizeEntries(entries)
 end
 
 function ManagerMethods:_sendGameStartSignal(kind, countdown)
-	local payload = {
+	local payload = self:_attachMetadata({
 		kind = kind,
 		countdown = countdown,
-	}
+	})
 	self:_forEachActivePlayer(function(player)
 		self._remotes.GameStart:FireClient(player, payload)
 	end)
 end
 
 function ManagerMethods:_broadcastCountdown(value, phase)
+	local metadata = self._metadata
 	self:_forEachActivePlayer(function(player)
-		self._remotes.CountdownUpdate:FireClient(player, value, phase)
+		self._remotes.CountdownUpdate:FireClient(player, value, phase, metadata)
 	end)
 end
 
 function ManagerMethods:_broadcastBombAssigned(player)
+	local metadata = self._metadata
 	self:_forEachActivePlayer(function(target)
-		self._remotes.BombAssigned:FireClient(target, player.Name, self._config.BombCountdown)
+		self._remotes.BombAssigned:FireClient(target, player.Name, self._config.BombCountdown, metadata)
 	end)
 end
 
 function ManagerMethods:_broadcastBombPassed(fromPlayer, toPlayer)
+	local metadata = self._metadata
 	self:_forEachActivePlayer(function(player)
-		self._remotes.BombPassed:FireClient(player, fromPlayer.Name, toPlayer.Name, self._state.bombTimer)
+		self._remotes.BombPassed:FireClient(player, fromPlayer.Name, toPlayer.Name, self._state.bombTimer, metadata)
 	end)
 end
 
 function ManagerMethods:_broadcastBombTimer()
+	local metadata = self._metadata
 	self:_forEachActivePlayer(function(player)
-		self._remotes.BombTimerUpdate:FireClient(player, self._state.bombTimer)
+		self._remotes.BombTimerUpdate:FireClient(player, self._state.bombTimer, metadata)
 	end)
 end
 
 function ManagerMethods:_broadcastPlayerEliminated(player)
+	local metadata = self._metadata
 	self:_forEachActivePlayer(function(target)
-		self._remotes.PlayerEliminated:FireClient(target, player.Name)
+		self._remotes.PlayerEliminated:FireClient(target, player.Name, metadata)
 	end)
 end
 
 function ManagerMethods:_broadcastMatchEnd(payload)
+	payload = self:_attachMetadata(payload)
 	self:_forEachActivePlayer(function(player)
 		self._remotes.GameEnd:FireClient(player, payload)
 	end)
@@ -1364,41 +1382,83 @@ function ManagerMethods:endMatch(reason)
 	self:_endMatch(nil)
 end
 
--- Singleton API -------------------------------------------------------------------------
+function ManagerMethods:getMetadata()
+	return self._metadata
+end
 
-function BombMatchManager.init(deps)
-	if singleton then
-		error("[BombMatchManager] Already initialized", 2)
+function ManagerMethods:getLevelId()
+	local metadata = self._metadata
+	if metadata then
+		return metadata.levelId
+	end
+	return nil
+end
+
+function ManagerMethods:updateWorkspaceRefs(workspaceRefs)
+	self._workspaceRefs = workspaceRefs or {}
+	self._spawnDescriptors = gatherSpawnDescriptors(self._workspaceRefs.level)
+end
+
+function ManagerMethods:_attachMetadata(payload)
+	local metadata = self._metadata
+	if not metadata then
+		return payload
+	end
+	if payload == nil then
+		payload = {}
+	end
+	if typeof(payload) == "table" then
+		if payload.levelId == nil then
+			payload.levelId = metadata.levelId
+		end
+		if payload.levelName == nil then
+			payload.levelName = metadata.levelName
+		end
+	end
+	return payload
+end
+
+function BombMatchManager.new(deps)
+	if typeof(deps) ~= "table" then
+		error("[BombMatchManager] Expected dependency table.", 2)
 	end
 
-	local manager = setmetatable({}, BombMatchManager)
+	local remotes = deps.remotes or {}
+	local manager = {}
+
 	manager._remotes = {
-		GameStart = assertRemote(deps.remotes, "GameStart"),
-		CountdownUpdate = assertRemote(deps.remotes, "CountdownUpdate"),
-		BombAssigned = assertRemote(deps.remotes, "BombAssigned"),
-		BombPassed = assertRemote(deps.remotes, "BombPassed"),
-		BombTimerUpdate = assertRemote(deps.remotes, "BombTimerUpdate"),
-		PlayerEliminated = assertRemote(deps.remotes, "PlayerEliminated"),
-		GameEnd = assertRemote(deps.remotes, "GameEnd"),
-		ScoreboardUpdate = assertRemote(deps.remotes, "ScoreboardUpdate"),
+		GameStart = assertRemote(remotes, "GameStart"),
+		CountdownUpdate = assertRemote(remotes, "CountdownUpdate"),
+		BombAssigned = assertRemote(remotes, "BombAssigned"),
+		BombPassed = assertRemote(remotes, "BombPassed"),
+		BombTimerUpdate = assertRemote(remotes, "BombTimerUpdate"),
+		PlayerEliminated = assertRemote(remotes, "PlayerEliminated"),
+		GameEnd = assertRemote(remotes, "GameEnd"),
+		ScoreboardUpdate = assertRemote(remotes, "ScoreboardUpdate"),
 	}
 
 	manager._configModule = deps.config
 	manager._config = requireConfig(deps.config)
-	manager._workspaceRefs = deps.workspaceRefs
+	manager._workspaceRefs = deps.workspaceRefs or {}
 	manager._callbacks = deps.callbacks or {}
-	manager._spawnDescriptors = gatherSpawnDescriptors(deps.workspaceRefs.level)
+	manager._metadata = cloneMetadata(deps.metadata)
+
+	if deps.levelId and manager._metadata.levelId == nil then
+		manager._metadata.levelId = deps.levelId
+	end
+	if deps.levelName and manager._metadata.levelName == nil then
+		manager._metadata.levelName = deps.levelName
+	end
+
+	manager._spawnDescriptors = gatherSpawnDescriptors(manager._workspaceRefs.level)
 	manager._state = newState()
 
-	singleton = setmetatable(manager, ManagerMethods)
-	return singleton
+	return setmetatable(manager, ManagerMethods)
 end
 
-function BombMatchManager.get()
-	if not singleton then
-		error("[BombMatchManager] Not initialized", 2)
-	end
-	return singleton
+function BombMatchManager.init(deps)
+	warn("[BombMatchManager] init() is deprecated. Use BombMatchManager.new() instead.")
+	return BombMatchManager.new(deps)
 end
 
 return BombMatchManager

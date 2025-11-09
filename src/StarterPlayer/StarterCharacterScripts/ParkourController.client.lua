@@ -26,6 +26,26 @@ local LedgeHang = require(ReplicatedStorage.Movement.LedgeHang)
 local FX = require(ReplicatedStorage.Movement.FX)
 local Fly = require(ReplicatedStorage.Movement.Fly)
 
+local function isBombTagModeActive()
+	local localPlayer = Players.LocalPlayer
+	if localPlayer then
+		local attributeValue = localPlayer:GetAttribute("BombTagActive")
+		if typeof(attributeValue) == "boolean" then
+			return attributeValue
+		end
+	end
+
+	local bombTagState = ReplicatedStorage:FindFirstChild("BombTagState")
+	if bombTagState then
+		local isActive = bombTagState:FindFirstChild("IsActive")
+		if isActive and typeof(isActive.Value) == "boolean" then
+			return isActive.Value
+		end
+	end
+
+	return false
+end
+
 -- One-shot FX helper: plays ReplicatedStorage/FX/<name> once at character position
 local function playOneShotFx(character, fxName, customPosition)
 	local root = character and (character:FindFirstChild("HumanoidRootPart") or character.PrimaryPart)
@@ -1350,10 +1370,8 @@ UserInputService.InputBegan:Connect(function(input, gpe)
 
 	if input.KeyCode == Enum.KeyCode.Q then
 		-- Check if bomb tag is active (infinite stamina)
-		local bombTagState = ReplicatedStorage:FindFirstChild("BombTagState")
-		local isActive = bombTagState and bombTagState:FindFirstChild("IsActive")
-		local isBombTagActive = isActive and isActive.Value or false
-		
+		local isBombTagActive = isBombTagModeActive()
+
 		-- Dash: only spend stamina if dash actually triggers (respects cooldown)
 		-- Skip stamina check if bomb tag is active (infinite stamina)
 		if isBombTagActive or state.stamina.current >= Config.DashStaminaCost then
@@ -1429,10 +1447,8 @@ UserInputService.InputBegan:Connect(function(input, gpe)
 						and Abilities.isSlideReady()
 					then
 						-- Consume stamina for slide (skip if bomb tag is active)
-						local bombTagState = ReplicatedStorage:FindFirstChild("BombTagState")
-						local isActive = bombTagState and bombTagState:FindFirstChild("IsActive")
-						local isBombTagActive = isActive and isActive.Value or false
-						
+						local isBombTagActive = isBombTagModeActive()
+
 						if not isBombTagActive then
 							local staminaCost = Config.SlideStaminaCost or 12
 							state.stamina.current = math.max(0, state.stamina.current - staminaCost)
@@ -2132,10 +2148,8 @@ RunService.RenderStepped:Connect(function(dt)
 	local stillSprinting
 	do
 		-- Check if bomb tag is active (infinite stamina)
-		local bombTagState = ReplicatedStorage:FindFirstChild("BombTagState")
-		local isActive = bombTagState and bombTagState:FindFirstChild("IsActive")
-		local isBombTagActive = isActive and isActive.Value or false
-		
+		local isBombTagActive = isBombTagModeActive()
+
 		-- Only tick stamina if bomb tag is not active
 		local _cur, s
 		if not isBombTagActive then
@@ -2164,10 +2178,8 @@ RunService.RenderStepped:Connect(function(dt)
 	-- Audio managed by AudioManager.client.lua
 
 	-- Wall slide stamina drain (half sprint rate) while active (skip if bomb tag is active)
-	local bombTagState = ReplicatedStorage:FindFirstChild("BombTagState")
-	local isActive = bombTagState and bombTagState:FindFirstChild("IsActive")
-	local isBombTagActive = isActive and isActive.Value or false
-	
+	local isBombTagActive = isBombTagModeActive()
+
 	if not isBombTagActive and WallJump.isWallSliding and WallJump.isWallSliding(character) then
 		local drain = (Config.WallSlideDrainPerSecond or (Config.SprintDrainPerSecond * 0.5)) * dt
 		state.stamina.current = math.max(0, state.stamina.current - drain)
@@ -2182,10 +2194,8 @@ RunService.RenderStepped:Connect(function(dt)
 	-- Publish client state for HUD
 	if state.staminaValue then
 		-- Check if bomb tag is active (infinite stamina)
-		local bombTagState = ReplicatedStorage:FindFirstChild("BombTagState")
-		local isActive = bombTagState and bombTagState:FindFirstChild("IsActive")
-		local isBombTagActive = isActive and isActive.Value or false
-		
+		local isBombTagActive = isBombTagModeActive()
+
 		-- For infinite stamina during bomb tag, set to max
 		if isBombTagActive then
 			state.staminaValue.Value = Config.StaminaMax

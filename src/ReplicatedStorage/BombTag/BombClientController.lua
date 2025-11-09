@@ -195,9 +195,11 @@ function BombClientController.new(args: {
 	local self = setmetatable({}, BombClientController)
 
 	self.player = args.player
+	self.playerGui = args.playerGui
 	self.config = args.config or {}
 	self.remotes = args.remotes or {} :: RemoteMap
 	self.stateValues = args.stateValues or {}
+	self._activeLevelId = nil
 	self.connections = {}
 	self.bombIconConnections = {}
 	self.bombHolder = nil
@@ -372,6 +374,35 @@ function BombClientController:_locateUi(playerGui: PlayerGui)
 	end
 end
 
+function BombClientController:_extractLevelId(metadata): string?
+	if metadata == nil then
+		return nil
+	end
+	local metadataType = typeof(metadata)
+	if metadataType == "string" then
+		return metadata
+	elseif metadataType == "table" then
+		return metadata.levelId or metadata.LevelId or metadata.id or metadata.levelID
+	end
+	return nil
+end
+
+function BombClientController:_shouldProcessEvent(metadata): boolean
+	local levelId = self:_extractLevelId(metadata)
+	if not levelId then
+		return true
+	end
+	if self._activeLevelId == nil then
+		self._activeLevelId = levelId
+		return true
+	end
+	return self._activeLevelId == levelId
+end
+
+function BombClientController:_clearLevelContext()
+	self._activeLevelId = nil
+end
+
 function BombClientController:_hookRemotes()
 	local function connect(remoteName, handler)
 		local remote = self.remotes[remoteName]
@@ -383,16 +414,24 @@ function BombClientController:_hookRemotes()
 	end
 
 	connect("GameStart", function(payload)
-		self:_onGameStart(payload)
+		if self:_shouldProcessEvent(payload) then
+			self:_onGameStart(payload)
+		end
 	end)
-	connect("CountdownUpdate", function(value, phase)
-		self:_onCountdownUpdate(value, phase)
+	connect("CountdownUpdate", function(value, phase, metadata)
+		if self:_shouldProcessEvent(metadata) then
+			self:_onCountdownUpdate(value, phase)
+		end
 	end)
 	connect("ScoreboardUpdate", function(data)
-		self:_onScoreboardUpdate(data)
+		if self:_shouldProcessEvent(data) then
+			self:_onScoreboardUpdate(data)
+		end
 	end)
 	connect("PlatformPrompt", function(data)
-		self:_onPlatformPrompt(data)
+		if self:_shouldProcessEvent(data) then
+			self:_onPlatformPrompt(data)
+		end
 	end)
 	connect("ReadyStatus", function(isReady)
 		self:_onReadyStatus(isReady)
@@ -400,20 +439,35 @@ function BombClientController:_hookRemotes()
 	connect("ReadyWarning", function(data)
 		self:_onReadyWarning(data)
 	end)
-	connect("BombAssigned", function(playerName, timerValue)
-		self:_onBombAssigned(playerName, timerValue)
+	connect("BombAssigned", function(playerName, timerValue, metadata)
+		if self:_shouldProcessEvent(metadata) then
+			self:_onBombAssigned(playerName, timerValue)
+		end
 	end)
-	connect("BombPassed", function(fromPlayer, toPlayer, timerValue)
-		self:_onBombPassed(fromPlayer, toPlayer, timerValue)
+	connect("BombPassed", function(fromPlayer, toPlayer, timerValue, metadata)
+		if self:_shouldProcessEvent(metadata) then
+			self:_onBombPassed(fromPlayer, toPlayer, timerValue)
+		end
 	end)
-	connect("BombTimerUpdate", function(timerValue)
-		self:_onBombTimerUpdate(timerValue)
+	connect("BombTimerUpdate", function(timerValue, metadata)
+		if self:_shouldProcessEvent(metadata) then
+			self:_onBombTimerUpdate(timerValue)
+		end
 	end)
-	connect("PlayerEliminated", function(playerName)
-		self:_onPlayerEliminated(playerName)
+	connect("PlayerEliminated", function(playerName, metadata)
+		if self:_shouldProcessEvent(metadata) then
+			self:_onPlayerEliminated(playerName)
+		end
 	end)
-	connect("GameEnd", function(payload, coins)
-		self:_onGameEnd(payload, coins)
+	connect("GameEnd", function(payload)
+		if self:_shouldProcessEvent(payload) then
+			self:_onGameEnd(payload)
+		else
+			self:_clearLevelContext()
+		end
+	end)
+	connect("ReadyToggle", function(data)
+		self:_onReadyToggle(data)
 	end)
 
 	local isActiveValue = self.stateValues.isActive
@@ -505,6 +559,14 @@ function BombClientController:_refreshRootVisibility()
 		show = true
 	end
 
+	if not show and self.ui.winnersFrame and self.ui.winnersFrame.Visible then
+		show = true
+	end
+
+	if not show and self.ui.moveMessageLabel and self.ui.moveMessageLabel.Visible then
+		show = true
+	end
+
 	self.ui.root.Visible = show
 end
 
@@ -578,6 +640,38 @@ function BombClientController:_setReadyButtonState(isReady: boolean)
 	end
 end
 
+function BombClientController:_setBombGuiEnabled(enabled: boolean)
+	local playerGui = self.playerGui
+	if not playerGui then
+		return
+	end
+	local bombGui = playerGui:FindFirstChild("BombGui")
+	if bombGui and bombGui:IsA("ScreenGui") then
+		bombGui.Enabled = enabled
+	end
+end
+
+function BombClientController:_onReadyToggle(payload: any)
+	if typeof(payload) ~= "table" then
+		return
+	end
+	local enabled = payload.enabled
+	if enabled == nil then
+		return
+	end
+	local reason = payload.reason
+	local shouldEnable = enabled and true or false
+	self:_setBombGuiEnabled(shouldEnable)
+	if shouldEnable then
+		if self._promptVisible then
+			self:_setReadyButtonVisible(true)
+		end
+	else
+		self:_setReadyButtonVisible(false)
+		self:_clearTeamHighlights()
+	end
+end
+
 function BombClientController:_lockReadyButton(message: string?)
 	if not self.ui.readyButton then
 		return
@@ -640,6 +734,7 @@ function BombClientController:_onGameStart(payload)
 end
 
 function BombClientController:_onCountdownUpdate(value, phase)
+	self:_setBombGuiEnabled(true)
 	if not self.ui.counterLabel then
 		return
 	end
@@ -760,6 +855,10 @@ function BombClientController:_onPlatformPrompt(payload)
 	local action = payload.action
 	local side = payload.side
 	local platform = payload.platform
+	local levelId = self:_extractLevelId(payload)
+	if levelId then
+		self._activeLevelId = levelId
+	end
 
 	print(
 		string.format(
@@ -782,6 +881,7 @@ function BombClientController:_onPlatformPrompt(payload)
 		self._promptVisible = false
 		self:_setReadyButtonVisible(false)
 		self:_setCountdownVisible(false)
+		self:_clearLevelContext()
 	elseif action == "lock" then
 		self:_lockReadyButton()
 	elseif action == "unlock" then
@@ -1140,15 +1240,16 @@ function BombClientController:_onPlayerEliminated(playerName: string?)
 	end
 end
 
-function BombClientController:_onGameEnd(payload: any, coinsArg: number?)
+function BombClientController:_onGameEnd(payload: any)
 	if self.stateValues.isActive then
 		self.stateValues.isActive.Value = false
 	end
 	self:_updateStaminaUI()
+	self:_clearLevelContext()
 
 	local winningSide: string? = nil
 	local winners = {}
-	local coins = tonumber(coinsArg) or 0
+	local coins = 0
 	local teamLabel: string? = nil
 	local localIsWinner = false
 	local localPlayer = self.player
@@ -1238,6 +1339,8 @@ function BombClientController.cleanup(self)
 	if not self then
 		return
 	end
+
+	self:_clearLevelContext()
 
 	for _, connection in ipairs(self.connections) do
 		connection:Disconnect()
