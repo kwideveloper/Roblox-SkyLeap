@@ -26,14 +26,17 @@ local remotes = {
 local currencyUpdatedRemote = remotesFolder:FindFirstChild("CurrencyUpdated")
 
 local BombLevelController = require(ServerScriptService:WaitForChild("BombTag"):WaitForChild("BombLevelController"))
+local BombLevelFFAController = require(ServerScriptService:WaitForChild("BombTag"):WaitForChild("BombLevelFFAController"))
 
 local BOMB_LEVEL_TAG = "BombLevel"
+local BOMB_LEVEL_FFA_TAG = "BombLevelFFA"
 local BOMB_TAG_ATTRIBUTE = "BombTagActive"
 
 local controllersByInstance: { [Instance]: any } = {}
 local levelConnections: { [Instance]: { RBXScriptConnection } } = {}
 local playerToController: { [Player]: any } = {}
 local activeMatchParticipants: { [any]: { [Player]: true } } = {}
+local controllerKinds: { [any]: "classic" | "ffa" } = {}
 
 local function setPlayerActivity(player: Player?, isActive: boolean)
 	if not player then
@@ -102,6 +105,18 @@ local function handleMatchEnded(controller)
 	activeMatchParticipants[controller] = nil
 end
 
+local function handleFfaPlayerJoined(player: Player, controller)
+	playerToController[player] = controller
+	setPlayerActivity(player, true)
+end
+
+local function handleFfaPlayerLeft(player: Player, controller)
+	if playerToController[player] == controller then
+		playerToController[player] = nil
+	end
+	setPlayerActivity(player, false)
+end
+
 local function cleanupLevelConnections(level: Instance)
 	local connections = levelConnections[level]
 	if connections then
@@ -110,6 +125,15 @@ local function cleanupLevelConnections(level: Instance)
 		end
 	end
 	levelConnections[level] = nil
+end
+
+local function cleanupControllerPlayers(controller)
+	for player, mapped in pairs(playerToController) do
+		if mapped == controller then
+			playerToController[player] = nil
+			setPlayerActivity(player, false)
+		end
+	end
 end
 
 local function destroyController(level: Instance)
@@ -121,24 +145,23 @@ local function destroyController(level: Instance)
 	controllersByInstance[level] = nil
 	cleanupLevelConnections(level)
 
-	local participants = activeMatchParticipants[controller]
-	if participants then
-		for player in pairs(participants) do
-			setPlayerActivity(player, false)
-			if playerToController[player] == controller then
-				playerToController[player] = nil
+	local controllerType = controllerKinds[controller] or "classic"
+	controllerKinds[controller] = nil
+
+	if controllerType == "classic" then
+		local participants = activeMatchParticipants[controller]
+		if participants then
+			for player in pairs(participants) do
+				setPlayerActivity(player, false)
+				if playerToController[player] == controller then
+					playerToController[player] = nil
+				end
 			end
 		end
 	end
+
 	activeMatchParticipants[controller] = nil
-
-	for player, mapped in pairs(playerToController) do
-		if mapped == controller then
-			playerToController[player] = nil
-			setPlayerActivity(player, false)
-		end
-	end
-
+	cleanupControllerPlayers(controller)
 	controller:destroy()
 end
 
@@ -167,25 +190,45 @@ local function createController(level: Instance)
 	local levelId = (typeof(level) == "Instance" and level:GetAttribute("LevelId")) or level.Name
 	local levelName = (typeof(level) == "Instance" and level:GetAttribute("LevelName")) or level.Name
 
-	local controller = BombLevelController.new({
-		level = level,
-		lobbySpawner = lobbySpawner,
-		remotes = remotes,
-		currencyRemote = currencyUpdatedRemote,
-		configModule = ConfigModule,
-		config = Config,
-		levelId = levelId,
-		levelName = levelName,
-		callbacks = {
-			onPlayerAssigned = handlePlayerAssigned,
-			onPlayerRemoved = handlePlayerRemoved,
-			onMatchStarted = handleMatchStarted,
-			onMatchEnded = handleMatchEnded,
-		},
-	})
+	local isFfaLevel = CollectionService:HasTag(level, BOMB_LEVEL_FFA_TAG)
+	local controller
+
+	if isFfaLevel then
+		controller = BombLevelFFAController.new({
+			level = level,
+			lobbySpawner = lobbySpawner,
+			remotes = remotes,
+			configModule = ConfigModule,
+			config = Config,
+			levelId = levelId,
+			levelName = levelName,
+			callbacks = {
+				onPlayerJoined = handleFfaPlayerJoined,
+				onPlayerLeft = handleFfaPlayerLeft,
+			},
+		})
+	else
+		controller = BombLevelController.new({
+			level = level,
+			lobbySpawner = lobbySpawner,
+			remotes = remotes,
+			currencyRemote = currencyUpdatedRemote,
+			configModule = ConfigModule,
+			config = Config,
+			levelId = levelId,
+			levelName = levelName,
+			callbacks = {
+				onPlayerAssigned = handlePlayerAssigned,
+				onPlayerRemoved = handlePlayerRemoved,
+				onMatchStarted = handleMatchStarted,
+				onMatchEnded = handleMatchEnded,
+			},
+		})
+	end
 
 	controllersByInstance[level] = controller
 	activeMatchParticipants[controller] = nil
+	controllerKinds[controller] = isFfaLevel and "ffa" or "classic"
 
 	local connections = {}
 	levelConnections[level] = connections
@@ -211,6 +254,9 @@ local function ensureExistingLevels()
 	for _, level in ipairs(CollectionService:GetTagged(BOMB_LEVEL_TAG)) do
 		createController(level)
 	end
+	for _, level in ipairs(CollectionService:GetTagged(BOMB_LEVEL_FFA_TAG)) do
+		createController(level)
+	end
 end
 
 local function onBombLevelAdded(level: Instance)
@@ -223,6 +269,8 @@ end
 
 CollectionService:GetInstanceAddedSignal(BOMB_LEVEL_TAG):Connect(onBombLevelAdded)
 CollectionService:GetInstanceRemovedSignal(BOMB_LEVEL_TAG):Connect(onBombLevelRemoved)
+CollectionService:GetInstanceAddedSignal(BOMB_LEVEL_FFA_TAG):Connect(onBombLevelAdded)
+CollectionService:GetInstanceRemovedSignal(BOMB_LEVEL_FFA_TAG):Connect(onBombLevelRemoved)
 
 ensureExistingLevels()
 

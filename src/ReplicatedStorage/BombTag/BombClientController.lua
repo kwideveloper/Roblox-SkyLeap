@@ -82,6 +82,27 @@ local function cloneTemplate(
 	template.Visible = false
 end
 
+local function resolvePlayerFromInfo(info)
+	if not info then
+		return nil
+	end
+
+	local userId = info.UserId or info.userId
+	if typeof(userId) == "number" then
+		local player = Players:GetPlayerByUserId(userId)
+		if player then
+			return player
+		end
+	end
+
+	local name = info.Name or info.name
+	if typeof(name) == "string" then
+		return Players:FindFirstChild(name)
+	end
+
+	return nil
+end
+
 local function createHighlight(character: Model)
 	if not character then
 		return
@@ -213,6 +234,10 @@ function BombClientController.new(args: {
 	self.teamHighlightTargets = {}
 	self._winnerClones = {}
 	self._winnerHideTask = nil
+	self._mode = "classic"
+	self._ffaBombs = {}
+	self._ffaPlayerBombs = {}
+	self._ffaTopKillers = {}
 
 	self.ui = {
 		root = nil :: Frame?,
@@ -313,6 +338,10 @@ function BombClientController:_locateUi(playerGui: PlayerGui)
 			if not self.ui.readyButton.Active then
 				return
 			end
+			if self._mode == "FFA" then
+				self.remotes.ReadyToggle:FireServer()
+				return
+			end
 
 			local nextState = not self._readyState
 			self:_setReadyButtonState(nextState)
@@ -323,6 +352,7 @@ function BombClientController:_locateUi(playerGui: PlayerGui)
 	self.ui.pointsContainer = self.ui.root:FindFirstChild("Points")
 		or waitForChildRecursive(self.ui.root, "Points", 2) :: Frame?
 	if self.ui.pointsContainer then
+		self.ui.pointsValueFrame = self.ui.pointsContainer:FindFirstChild("Points")
 		self.ui.pointsRed = self.ui.pointsContainer:FindFirstChild("Red", true)
 		self.ui.pointsBlue = self.ui.pointsContainer:FindFirstChild("Blue", true)
 
@@ -526,6 +556,14 @@ function BombClientController:_setReadyButtonVisible(visible: boolean)
 		return
 	end
 
+	if self._mode == "FFA" and visible then
+		self.ui.readyButton.Visible = true
+		self.ui.readyButton.Active = true
+		self:_setReadyButtonState(false)
+		self:_refreshRootVisibility()
+		return
+	end
+
 	self.ui.readyButton.Visible = visible
 	print(string.format("[BombTag][Client] ReadyButton.Visible -> %s", tostring(visible)))
 
@@ -574,6 +612,11 @@ function BombClientController:_setTeamHighlights(
 	team1: { { UserId: number?, Name: string? } },
 	team2: { { UserId: number?, Name: string? } }
 )
+	if self._mode == "FFA" then
+		self:_clearTeamHighlights()
+		return
+	end
+
 	local localId = self.player.UserId
 	local newSides: { [number]: string } = {}
 	local localSide = nil
@@ -622,8 +665,359 @@ function BombClientController:_setTeamHighlights(
 	end
 end
 
+function BombClientController:_activateFfaMode()
+	if self._mode == "FFA" then
+		return
+	end
+
+	self._mode = "FFA"
+	self:_clearTeamHighlights()
+	self:_resetFfaBombState()
+
+	if self.ui.pointsRed then
+		self.ui.pointsRed.Visible = false
+	end
+	if self.ui.pointsBlue then
+		self.ui.pointsBlue.Visible = false
+	end
+	if self.ui.pointsValueFrame and self.ui.pointsValueFrame:IsA("GuiObject") then
+		self.ui.pointsValueFrame.Visible = false
+	end
+	if self.ui.teamFrames.Right then
+		self.ui.teamFrames.Right.Visible = false
+	end
+	if self.ui.teamFrames.Left then
+		self.ui.teamFrames.Left.Visible = true
+	end
+
+	self:_setReadyButtonVisible(true)
+	self:_setReadyButtonState(false)
+end
+
+function BombClientController:_deactivateFfaMode()
+	if self._mode ~= "FFA" then
+		return
+	end
+
+	self._mode = "classic"
+	self:_resetFfaBombState()
+	if self.ui.pointsValueFrame and self.ui.pointsValueFrame:IsA("GuiObject") then
+		self.ui.pointsValueFrame.Visible = true
+	end
+	self:_refreshRootVisibility()
+end
+
+function BombClientController:_resetFfaBombState()
+	for player in pairs(self._ffaPlayerBombs) do
+		self:_removeIcon(player)
+	end
+	self._ffaBombs = {}
+	self._ffaPlayerBombs = {}
+end
+
+function BombClientController:_renderFfaScoreboard(data)
+	self:_activateFfaMode()
+
+	local container = self.ui.teamFrames.Left
+	local template = self.ui.teamTemplates.Left
+	if not container or not template then
+		return
+	end
+
+	for _, child in ipairs(container:GetChildren()) do
+		if child ~= template and child:IsA("Frame") then
+			child:Destroy()
+		end
+	end
+
+	local orderMap = { [1] = 2, [2] = 1, [3] = 3 }
+	local topKillers = data.topKillers or {}
+	for index, info in ipairs(topKillers) do
+		if index > 3 then
+			break
+		end
+
+		local clone = template:Clone()
+		clone.Visible = true
+		clone.LayoutOrder = orderMap[index] or index
+		clone.Name = tostring(info.Name or info.UserId or ("Player" .. index))
+
+		local imageLabel = clone:FindFirstChildWhichIsA("ImageLabel", true)
+		if imageLabel then
+			imageLabel.Image = getThumbnail(info.UserId)
+			imageLabel.ImageTransparency = 0
+		end
+
+		local textLabel = clone:FindFirstChildWhichIsA("TextLabel", true)
+		if textLabel then
+			textLabel.Visible = false
+		end
+
+		clone.Parent = container
+	end
+
+	template.Visible = false
+
+	if self.ui.pointsContainer then
+		self.ui.pointsContainer.Visible = data.active ~= false
+	end
+	container.Visible = data.active ~= false
+
+	if self.ui.pointsRed then
+		self.ui.pointsRed.Visible = false
+	end
+	if self.ui.pointsBlue then
+		self.ui.pointsBlue.Visible = false
+	end
+	if self.ui.teamFrames.Right then
+		self.ui.teamFrames.Right.Visible = false
+	end
+	if self.ui.pointsValueFrame and self.ui.pointsValueFrame:IsA("GuiObject") then
+		self.ui.pointsValueFrame.Visible = false
+	end
+
+	self._ffaTopKillers = topKillers
+	self:_refreshRootVisibility()
+end
+
+function BombClientController:_ffaEnsurePlayerEntry(player: Player)
+	local entry = self._ffaPlayerBombs[player]
+	if not entry then
+		entry = {}
+		self._ffaPlayerBombs[player] = entry
+	end
+	return entry
+end
+
+function BombClientController:_ffaTrackBomb(bombId: number, player: Player?, timer: number?, holderName: string?)
+	if not bombId then
+		return
+	end
+
+	local record = self._ffaBombs[bombId]
+	if not record then
+		record = {}
+		self._ffaBombs[bombId] = record
+	end
+
+	record.player = player
+	record.name = player and player.Name or holderName or record.name
+	record.timer = timer or record.timer or (self.config.BombCountdown or 15)
+
+	if player then
+		local entry = self:_ffaEnsurePlayerEntry(player)
+		entry[bombId] = true
+		self:_attachIcon(player, record.timer)
+		if timer then
+			self:_updateBombIconTimer(player, timer)
+		end
+	end
+end
+
+function BombClientController:_ffaReleaseBomb(bombId: number)
+	local record = self._ffaBombs[bombId]
+	if not record then
+		return
+	end
+
+	local player = record.player
+	if player then
+		local entry = self._ffaPlayerBombs[player]
+		if entry then
+			entry[bombId] = nil
+			if next(entry) == nil then
+				self._ffaPlayerBombs[player] = nil
+				self:_removeIcon(player)
+			end
+		end
+	end
+
+	self._ffaBombs[bombId] = nil
+end
+
+function BombClientController:_ffaReleaseBombByPlayer(player: Player)
+	if not player then
+		return
+	end
+
+	local toRemove = {}
+	for bombId, record in pairs(self._ffaBombs) do
+		if record.player == player then
+			table.insert(toRemove, bombId)
+		end
+	end
+	for _, bombId in ipairs(toRemove) do
+		self:_ffaReleaseBomb(bombId)
+	end
+end
+
+function BombClientController:_onFfaBombAssigned(payload: table)
+	self:_activateFfaMode()
+	local holderInfo = payload.holder
+	local player = resolvePlayerFromInfo(holderInfo)
+	local holderName = holderInfo and (holderInfo.Name or holderInfo.name)
+
+	self:_ffaTrackBomb(payload.bombId, player, payload.timer, holderName)
+
+	local display = holderInfo and (holderInfo.DisplayName or holderInfo.Name)
+	if not display and player then
+		display = player.DisplayName or player.Name
+	end
+
+	if self.ui.moveMessageLabel and display then
+		self.ui.moveMessageLabel.Text = string.format("%s holds the bomb!", display)
+		self.ui.moveMessageLabel.Visible = true
+	end
+
+	self:_refreshRootVisibility()
+end
+
+function BombClientController:_onFfaBombPassed(payload: table)
+	self:_activateFfaMode()
+
+	local bombId = payload.bombId
+	if not bombId then
+		return
+	end
+
+	local toInfo = payload.to
+	local toPlayer = resolvePlayerFromInfo(toInfo)
+	local toName = toInfo and (toInfo.Name or toInfo.name)
+
+	local record = self._ffaBombs[bombId]
+	if not record then
+		self:_ffaTrackBomb(bombId, toPlayer, payload.timer, toName)
+	else
+		local fromPlayer = record.player
+		if not fromPlayer and payload.from then
+			fromPlayer = resolvePlayerFromInfo(payload.from)
+		end
+
+		if fromPlayer and fromPlayer ~= toPlayer then
+			local entry = self._ffaPlayerBombs[fromPlayer]
+			if entry then
+				entry[bombId] = nil
+				if next(entry) == nil then
+					self._ffaPlayerBombs[fromPlayer] = nil
+					self:_removeIcon(fromPlayer)
+				end
+			end
+		end
+
+		record.player = toPlayer
+		record.name = toPlayer and toPlayer.Name or toName or record.name
+		record.timer = payload.timer or record.timer
+
+		if toPlayer then
+			local entry = self:_ffaEnsurePlayerEntry(toPlayer)
+			entry[bombId] = true
+			self:_attachIcon(toPlayer, record.timer)
+			if payload.timer then
+				self:_updateBombIconTimer(toPlayer, payload.timer)
+			end
+		end
+	end
+
+	local display = toInfo and (toInfo.DisplayName or toInfo.Name)
+	if not display and toPlayer then
+		display = toPlayer.DisplayName or toPlayer.Name
+	end
+
+	if self.ui.moveMessageLabel and display then
+		self.ui.moveMessageLabel.Text = string.format("Bomb passed to %s!", display)
+		self.ui.moveMessageLabel.Visible = true
+	end
+
+	self:_refreshRootVisibility()
+end
+
+function BombClientController:_onFfaBombTimerUpdate(payload: table)
+	self:_activateFfaMode()
+
+	local seen = {}
+	local soonestTimer = nil
+
+	for _, info in ipairs(payload.bombs or {}) do
+		local bombId = info.bombId
+		if bombId then
+			seen[bombId] = true
+			local holderInfo = info.holder
+			local player = resolvePlayerFromInfo(holderInfo)
+			local holderName = holderInfo and (holderInfo.Name or holderInfo.name)
+			self:_ffaTrackBomb(bombId, player, info.timer, holderName)
+			if player and info.timer then
+				self:_updateBombIconTimer(player, info.timer)
+			end
+			if info.timer then
+				if not soonestTimer or info.timer < soonestTimer then
+					soonestTimer = info.timer
+				end
+			end
+		end
+	end
+
+	local toRemove = {}
+	for bombId in pairs(self._ffaBombs) do
+		if not seen[bombId] then
+			table.insert(toRemove, bombId)
+		end
+	end
+	for _, bombId in ipairs(toRemove) do
+		self:_ffaReleaseBomb(bombId)
+	end
+
+	if self.ui.moveMessageLabel then
+		if soonestTimer then
+			self.ui.moveMessageLabel.Text =
+				string.format("Bomb explodes in %d seconds!", math.max(0, math.floor(soonestTimer)))
+			self.ui.moveMessageLabel.Visible = true
+		elseif next(self._ffaBombs) == nil then
+			self.ui.moveMessageLabel.Visible = false
+		end
+	end
+
+	self:_refreshRootVisibility()
+end
+
+function BombClientController:_handleFfaPlayerEliminated(payload: table)
+	self:_activateFfaMode()
+
+	local playerInfo = payload.player
+	local player = resolvePlayerFromInfo(playerInfo)
+	local playerName = playerInfo and (playerInfo.Name or playerInfo.name)
+
+	if player then
+		self:_ffaReleaseBombByPlayer(player)
+	elseif playerName then
+		for bombId, record in pairs(self._ffaBombs) do
+			if record.name == playerName then
+				self:_ffaReleaseBomb(bombId)
+			end
+		end
+	end
+
+	if self.ui.moveMessageLabel and playerInfo then
+		local display = playerInfo.DisplayName or playerInfo.Name
+		if display then
+			self.ui.moveMessageLabel.Text = string.format("%s was eliminated!", display)
+			self.ui.moveMessageLabel.Visible = true
+		end
+	end
+
+	self:_refreshRootVisibility()
+end
+
 function BombClientController:_setReadyButtonState(isReady: boolean)
 	if not self.ui.readyButton then
+		return
+	end
+
+	if self._mode == "FFA" then
+		self._readyState = false
+		self.ui.readyButton.Active = true
+		self.ui.readyButton.AutoButtonColor = true
+		self.ui.readyButton.Text = "Leave"
+		self.ui.readyButton.BackgroundColor3 = WAITING_COLOR
 		return
 	end
 
@@ -660,6 +1054,24 @@ function BombClientController:_onReadyToggle(payload: any)
 		return
 	end
 	local reason = payload.reason
+
+	if payload.mode == "FFA" then
+		if enabled then
+			self:_activateFfaMode()
+			self:_setBombGuiEnabled(true)
+			self:_setReadyButtonVisible(true)
+		else
+			self:_setReadyButtonVisible(false)
+			self:_setBombGuiEnabled(false)
+			self:_resetFfaBombState()
+		end
+		return
+	end
+
+	if self._mode == "FFA" and payload.mode ~= "FFA" then
+		self:_deactivateFfaMode()
+	end
+
 	local shouldEnable = enabled and true or false
 	self:_setBombGuiEnabled(shouldEnable)
 	if shouldEnable then
@@ -687,6 +1099,14 @@ function BombClientController:_onGameStart(payload)
 	local countdown = nil
 
 	if typeof(payload) == "table" then
+		if payload.mode == "FFA" then
+			self:_activateFfaMode()
+			self:_setReadyButtonVisible(true)
+			self:_setBombGuiEnabled(true)
+			self:_refreshRootVisibility()
+			return
+		end
+
 		kind = payload.kind
 		countdown = payload.countdown
 	else
@@ -789,8 +1209,31 @@ function BombClientController:_onCountdownUpdate(value, phase)
 end
 
 function BombClientController:_onScoreboardUpdate(data)
+	if data and data.mode == "FFA" then
+		if not self.ui.pointsContainer then
+			return
+		end
+		self:_renderFfaScoreboard(data)
+		return
+	elseif self._mode == "FFA" then
+		self:_deactivateFfaMode()
+	end
+
 	if not self.ui.pointsContainer then
 		return
+	end
+
+	if self.ui.pointsRed then
+		self.ui.pointsRed.Visible = true
+	end
+	if self.ui.pointsBlue then
+		self.ui.pointsBlue.Visible = true
+	end
+	if self.ui.pointsValueFrame and self.ui.pointsValueFrame:IsA("GuiObject") then
+		self.ui.pointsValueFrame.Visible = true
+	end
+	if self.ui.teamFrames.Right then
+		self.ui.teamFrames.Right.Visible = true
 	end
 
 	local scores = data and data.scores or {}
@@ -893,11 +1336,19 @@ function BombClientController:_onPlatformPrompt(payload)
 end
 
 function BombClientController:_onReadyStatus(isReady: boolean)
+	if self._mode == "FFA" then
+		return
+	end
 	self:_setReadyButtonState(isReady)
 end
 
 function BombClientController:_onReadyWarning(payload)
 	if not self.ui.readyMessageLabel then
+		return
+	end
+
+	if self._mode == "FFA" then
+		self.ui.readyMessageLabel.Visible = false
 		return
 	end
 
@@ -1152,6 +1603,14 @@ function BombClientController:_ensureTeamHighlightForPlayer(player: Player, colo
 end
 
 function BombClientController:_onBombAssigned(playerName: string?, timerValue: number?)
+	if typeof(playerName) == "table" then
+		local payload = playerName
+		if payload.mode == "FFA" then
+			self:_onFfaBombAssigned(payload)
+			return
+		end
+	end
+
 	if self.bombHolder then
 		self:_removeIcon(self.bombHolder)
 	end
@@ -1179,6 +1638,14 @@ function BombClientController:_onBombAssigned(playerName: string?, timerValue: n
 end
 
 function BombClientController:_onBombPassed(fromPlayer: string?, toPlayer: string?, timerValue: number?)
+	if typeof(fromPlayer) == "table" then
+		local payload = fromPlayer
+		if payload.mode == "FFA" then
+			self:_onFfaBombPassed(payload)
+			return
+		end
+	end
+
 	if fromPlayer then
 		local fromObj = Players:FindFirstChild(fromPlayer)
 		if fromObj then
@@ -1206,6 +1673,14 @@ function BombClientController:_onBombPassed(fromPlayer: string?, toPlayer: strin
 end
 
 function BombClientController:_onBombTimerUpdate(timerValue: number)
+	if typeof(timerValue) == "table" then
+		local payload = timerValue
+		if payload.mode == "FFA" then
+			self:_onFfaBombTimerUpdate(payload)
+			return
+		end
+	end
+
 	if self.bombHolder then
 		self:_updateBombIconTimer(self.bombHolder, timerValue)
 	end
@@ -1224,6 +1699,14 @@ function BombClientController:_onBombTimerUpdate(timerValue: number)
 end
 
 function BombClientController:_onPlayerEliminated(playerName: string?)
+	if typeof(playerName) == "table" then
+		local payload = playerName
+		if payload.mode == "FFA" then
+			self:_handleFfaPlayerEliminated(payload)
+			return
+		end
+	end
+
 	if not playerName then
 		return
 	end
@@ -1241,6 +1724,26 @@ function BombClientController:_onPlayerEliminated(playerName: string?)
 end
 
 function BombClientController:_onGameEnd(payload: any)
+	if typeof(payload) == "table" and payload.mode == "FFA" then
+		self:_deactivateFfaMode()
+		self.pointsLockedVisible = false
+		if self.stateValues.isActive then
+			self.stateValues.isActive.Value = false
+		end
+		self:_updateStaminaUI()
+		self:_clearLevelContext()
+		if self.ui.pointsContainer then
+			self.ui.pointsContainer.Visible = false
+		end
+		self:_setReadyButtonVisible(false)
+		self:_setCountdownVisible(false)
+		if self.ui.moveMessageLabel then
+			self.ui.moveMessageLabel.Visible = false
+		end
+		self:_refreshRootVisibility()
+		return
+	end
+
 	if self.stateValues.isActive then
 		self.stateValues.isActive.Value = false
 	end
