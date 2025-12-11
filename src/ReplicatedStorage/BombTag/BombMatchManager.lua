@@ -3,6 +3,8 @@ local RunService = game:GetService("RunService")
 local Workspace = game:GetService("Workspace")
 local ServerScriptService = game:GetService("ServerScriptService")
 
+local BOMB_TAG_ATTRIBUTE = "BombTagActive"
+
 local PlayerProfile = require(ServerScriptService:WaitForChild("PlayerProfile"))
 local Leaderboards = require(ServerScriptService:WaitForChild("Leaderboards"))
 
@@ -214,6 +216,17 @@ local function newState(): ManagerState
 		matchStartTick = 0,
 		pendingLobbyReturnTask = nil,
 	}
+end
+
+local function isPlayerActive(player: Player?): boolean
+	if not player or not player.Parent then
+		return false
+	end
+	local ok, value = pcall(player.GetAttribute, player, BOMB_TAG_ATTRIBUTE)
+	if not ok then
+		return false
+	end
+	return value == true
 end
 
 local ManagerMethods = {}
@@ -884,9 +897,17 @@ function ManagerMethods:_tryPassBomb(toPlayer)
 		return
 	end
 
+	if not isPlayerActive(currentHolder) or not isPlayerActive(toPlayer) then
+		return
+	end
+
 	local currentState = self._state.playerLookup[currentHolder]
 	local targetState = self._state.playerLookup[toPlayer]
 	if not currentState or not targetState then
+		return
+	end
+
+	if not targetState.alive then
 		return
 	end
 
@@ -926,7 +947,7 @@ function ManagerMethods:_heartbeatUpdate()
 	for _, playerState in ipairs(self._state.players) do
 		if playerState.alive then
 			local otherPlayer = playerState.entry.player
-			if otherPlayer ~= holder then
+			if otherPlayer ~= holder and isPlayerActive(otherPlayer) then
 				local character = otherPlayer.Character
 				local root = character and character:FindFirstChild("HumanoidRootPart")
 				if root then

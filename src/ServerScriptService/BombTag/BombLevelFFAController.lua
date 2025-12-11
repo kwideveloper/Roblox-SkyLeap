@@ -3,6 +3,8 @@ local RunService = game:GetService("RunService")
 local Workspace = game:GetService("Workspace")
 local ServerScriptService = game:GetService("ServerScriptService")
 
+local BOMB_TAG_ATTRIBUTE = "BombTagActive"
+
 local PlayerProfile = require(ServerScriptService:WaitForChild("PlayerProfile"))
 local Leaderboards = require(ServerScriptService:WaitForChild("Leaderboards"))
 
@@ -60,6 +62,17 @@ local DEFAULT_BOMB_COUNTDOWN = 15
 local DEFAULT_PASS_DISTANCE = 10
 local DEFAULT_PASS_COOLDOWN = 1
 local DEFAULT_RESPAWN_DELAY = 2.5
+
+local function isPlayerActive(player: Player?): boolean
+	if not player or not player.Parent then
+		return false
+	end
+	local ok, value = pcall(player.GetAttribute, player, BOMB_TAG_ATTRIBUTE)
+	if not ok then
+		return false
+	end
+	return value == true
+end
 
 local function computeSurfaceCFrameForObject(object, offset, config)
 	if not object then
@@ -267,7 +280,15 @@ function BombLevelFFAController:_addPlayer(player: Player)
 	end
 
 	if self._players[player] then
-		return
+		if isPlayerActive(player) then
+			-- Player is already registered; ensure scoreboard and timers stay up to date.
+			self:_pushScoreboard()
+			self:_ensureBombTargets()
+			return
+		end
+
+		-- Player is tracked but inactive; clean up stale state to allow a fresh join.
+		self:_removePlayer(player, "refresh", true)
 	end
 
 	self._players[player] = true
@@ -309,7 +330,7 @@ function BombLevelFFAController:_addPlayer(player: Player)
 	self:_ensureBombTargets()
 end
 
-function BombLevelFFAController:_removePlayer(player: Player, reason: string?)
+function BombLevelFFAController:_removePlayer(player: Player, reason: string?, skipTeleport: boolean?)
 	if not self._players[player] then
 		return
 	end
@@ -339,7 +360,9 @@ function BombLevelFFAController:_removePlayer(player: Player, reason: string?)
 
 	self._holderToBomb[player] = nil
 
-	self:_teleportPlayerToLobby(player)
+	if not skipTeleport then
+		self:_teleportPlayerToLobby(player)
+	end
 
 	self:_fireClient(self._remotes.ScoreboardUpdate, player, {
 		active = false,
@@ -852,7 +875,7 @@ function BombLevelFFAController:_attemptBombPass(record: BombRecord)
 	end
 
 	local holder = record.holder
-	if not holder or not holder.Parent then
+	if not isPlayerActive(holder) then
 		self:_handleHolderRemoved(record, "lost_holder")
 		return
 	end
@@ -871,7 +894,7 @@ function BombLevelFFAController:_attemptBombPass(record: BombRecord)
 	local distanceThreshold = self._config.BombPassDistance or DEFAULT_PASS_DISTANCE
 
 	for player in pairs(self._players) do
-		if player ~= holder and player.Parent and not self._holderToBomb[player] then
+		if player ~= holder and isPlayerActive(player) and not self._holderToBomb[player] then
 			local character = player.Character
 			local root = character and character:FindFirstChild("HumanoidRootPart")
 			if root then
