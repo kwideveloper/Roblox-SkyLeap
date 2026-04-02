@@ -1479,23 +1479,16 @@ UserInputService.InputBegan:Connect(function(input, gpe)
 				end
 			end
 		end
-	elseif input.KeyCode == Enum.KeyCode.E then
-		-- PRIORITY 1: Flying (highest priority - check first)
+	elseif input.KeyCode == Enum.KeyCode.F then
+		-- Fly only (zipline/climb stay on E)
 		if Fly.isActive(character) then
 			print("[Fly] Stopping flight")
 			Fly.stop(character)
 		else
-			-- Check if user wants to start flying (hold Shift+E or just E when not near zipline/climbable)
-			local shouldFly = true
-			
-			-- Don't start flying if near zipline or actively climbing
-			if Zipline.isActive(character) or Zipline.isNear(character) then
-				shouldFly = false
-			end
-			
+			-- Don't start flying if on/near zipline (use E for that)
+			local shouldFly = not (Zipline.isActive(character) or Zipline.isNear(character))
 			if shouldFly then
 				print("[Fly] Starting flight")
-				-- Stop other movement systems that might interfere
 				if Climb.isActive(character) then
 					Climb.stop(character)
 					cleanupClimbAnimation(character)
@@ -1515,7 +1508,6 @@ UserInputService.InputBegan:Connect(function(input, gpe)
 				if WallJump.isWallSliding and WallJump.isWallSliding(character) then
 					WallJump.stopSlide(character)
 				end
-				-- Ensure humanoid is ready
 				local humanoid = character:FindFirstChildOfClass("Humanoid")
 				if humanoid then
 					local success = Fly.start(character)
@@ -1527,15 +1519,13 @@ UserInputService.InputBegan:Connect(function(input, gpe)
 				else
 					print("[Fly] No humanoid found")
 				end
-				return -- Exit early, don't process zipline/climb
 			end
 		end
-		
-		-- PRIORITY 2: Zipline takes priority when near a rope
+	elseif input.KeyCode == Enum.KeyCode.E then
+		-- Zipline and climb (not fly — fly is F)
 		if Zipline.isActive(character) then
 			Zipline.stop(character)
 		elseif Zipline.isNear(character) then
-			-- stop incompatible states
 			if Climb.isActive(character) then
 				Climb.stop(character)
 				cleanupClimbAnimation(character)
@@ -1548,24 +1538,19 @@ UserInputService.InputBegan:Connect(function(input, gpe)
 			end
 			state.sliding = false
 			state.sprintHeld = false
-			-- Stop conflicting animations before starting zipline
 			stopConflictingAnimations(character, "zipline")
 			Zipline.tryStart(character)
 		else
-			-- PRIORITY 3: Toggle climb on climbable walls
 			if Climb.isActive(character) then
 				Climb.stop(character)
 				cleanupClimbAnimation(character)
 			else
 				if state.stamina.current >= Config.ClimbMinStamina then
-					-- stop any wall slide to allow climbing to take over immediately
 					if WallJump.isWallSliding and WallJump.isWallSliding(character) then
 						WallJump.stopSlide(character)
 					end
-					-- Stop conflicting animations before starting climbing
 					stopConflictingAnimations(character, "climbing")
 					if Climb.tryStart(character) then
-						-- start draining immediately on start tick
 						state.stamina.current = state.stamina.current - (Config.ClimbStaminaDrainPerSecond * 0.1)
 						if state.stamina.current < 0 then
 							state.stamina.current = 0

@@ -5,6 +5,7 @@ local WallMemory = require(game:GetService("ReplicatedStorage").Movement.WallMem
 local Animations = require(game:GetService("ReplicatedStorage").Movement.Animations)
 local WallRun = require(game:GetService("ReplicatedStorage").Movement.WallRun)
 local Climb = require(game:GetService("ReplicatedStorage").Movement.Climb)
+local ParkourSurfaceGate = require(game:GetService("ReplicatedStorage").Movement.ParkourSurfaceGate)
 
 local WallJump = {}
 
@@ -62,9 +63,7 @@ local function findNearbyWallForSlide(rootPart)
 			local allowedDot = (Config.SurfaceVerticalDotMax or Config.SurfaceVerticalDotMin or 0.2)
 			if verticalDot <= allowedDot then
 				local inst = result.Instance
-				-- Allow slide also on climate surfaces; just exclude whether walljump == fals
-				local wallJumpAttr = inst:GetAttribute("WallJump")
-				if wallJumpAttr ~= false then
+				if ParkourSurfaceGate.isMechanicAllowed(inst, "WallJump") then
 					return result
 				end
 			end
@@ -111,9 +110,7 @@ local function findNearbyWall(rootPart)
 				local allowedDot = 0.5 -- More lenient than Config.SurfaceVerticalDotMax (0.1)
 				if verticalDot <= allowedDot then
 					local inst = result.Instance
-					-- WallJump is allowed by default; disallow only if attribute explicitly false
-					local wallJumpAttr = inst:GetAttribute("WallJump")
-					if wallJumpAttr ~= false then
+					if ParkourSurfaceGate.isMechanicAllowed(inst, "WallJump") then
 						-- Choose the closest wall for better accuracy
 						local distance = (result.Position - origin).Magnitude
 						if distance < bestDistance then

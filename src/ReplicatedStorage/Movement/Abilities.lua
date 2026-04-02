@@ -3,6 +3,7 @@
 local Config = require(game:GetService("ReplicatedStorage").Movement.Config)
 local Animations = require(game:GetService("ReplicatedStorage").Movement.Animations)
 local SharedUtils = require(game:GetService("ReplicatedStorage").SharedUtils)
+local ParkourSurfaceGate = require(game:GetService("ReplicatedStorage").Movement.ParkourSurfaceGate)
 local RunService = game:GetService("RunService")
 local OverlapParams = OverlapParams
 
@@ -878,25 +879,7 @@ local function detectLedgeForMantle(root)
 	if verticalDot > allowedDot then
 		return false
 	end
-	-- Attribute gate: if any ancestor has Mantle == false, disallow mantle
-	local function getMantleAttr(inst)
-		local cur = inst
-		for _ = 1, 5 do
-			if not cur then
-				break
-			end
-			if typeof(cur.GetAttribute) == "function" then
-				local val = cur:GetAttribute("Mantle")
-				if val ~= nil then
-					return val
-				end
-			end
-			cur = cur.Parent
-		end
-		return nil
-	end
-	local mAttr = getMantleAttr(res.Instance)
-	if mAttr == false then
+	if not ParkourSurfaceGate.isMechanicAllowed(res.Instance, "Mantle") then
 		return false
 	end
 	-- Check ledge height within window above waist (root center)
@@ -953,13 +936,15 @@ function Abilities.isMantleCandidate(character)
 			local origin = p + back * 0.6
 			local r = workspace:Raycast(origin, dir * (distance + 0.6), params)
 			if r and r.Instance and r.Instance.CanCollide then
-				local topY = computeObstacleTopY(r.Instance)
-				local waistY = root.Position.Y
-				local above = topY - waistY
-				local minH = Config.MantleMinAboveWaist or 0
-				local maxH = Config.MantleMaxAboveWaist or 10
-				if above >= minH and above <= maxH then
-					return true
+				if ParkourSurfaceGate.isMechanicAllowed(r.Instance, "Mantle") then
+					local topY = computeObstacleTopY(r.Instance)
+					local waistY = root.Position.Y
+					local above = topY - waistY
+					local minH = Config.MantleMinAboveWaist or 0
+					local maxH = Config.MantleMaxAboveWaist or 10
+					if above >= minH and above <= maxH then
+						return true
+					end
 				end
 			end
 		end

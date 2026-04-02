@@ -3,6 +3,7 @@
 local Config = require(game:GetService("ReplicatedStorage").Movement.Config)
 local WallMemory = require(game:GetService("ReplicatedStorage").Movement.WallMemory)
 local Animations = require(game:GetService("ReplicatedStorage").Movement.Animations)
+local ParkourSurfaceGate = require(game:GetService("ReplicatedStorage").Movement.ParkourSurfaceGate)
 
 local WallRun = {}
 local active = {}
@@ -45,9 +46,7 @@ local function findWall(rootPart)
 			local inst = leftResult.Instance
 			local CollectionService = game:GetService("CollectionService")
 			local isClimbable = CollectionService:HasTag(inst, "Climbable")
-			local wallRunAttr = inst:GetAttribute("WallRun")
-			local allowedByRule = wallRunAttr ~= false -- Allow unless explicitly set to false
-			if allowedByRule then
+			if ParkourSurfaceGate.isMechanicAllowed(inst, "WallRun") then
 				local mult = inst:GetAttribute("WallRunSpeedMultiplier")
 				mult = (type(mult) == "number" and mult > 0) and mult or 1
 				return {
@@ -70,9 +69,7 @@ local function findWall(rootPart)
 			local inst = rightResult.Instance
 			local CollectionService = game:GetService("CollectionService")
 			local isClimbable = CollectionService:HasTag(inst, "Climbable")
-			local wallRunAttr = inst:GetAttribute("WallRun")
-			local allowedByRule = wallRunAttr ~= false -- Allow unless explicitly set to false
-			if allowedByRule then
+			if ParkourSurfaceGate.isMechanicAllowed(inst, "WallRun") then
 				local mult = inst:GetAttribute("WallRunSpeedMultiplier")
 				mult = (type(mult) == "number" and mult > 0) and mult or 1
 				return {
@@ -347,8 +344,7 @@ function WallRun.maintain(character)
 		return false
 	end
 	-- Double-check that wall still allows wallrun (in case attribute changed)
-	local wallRunAttr = hit.instance:GetAttribute("WallRun")
-	if wallRunAttr == false then
+	if not ParkourSurfaceGate.isMechanicAllowed(hit.instance, "WallRun") then
 		WallRun.stop(character)
 		return false
 	end

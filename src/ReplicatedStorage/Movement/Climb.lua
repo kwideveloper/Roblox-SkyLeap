@@ -3,6 +3,7 @@
 local Config = require(game:GetService("ReplicatedStorage").Movement.Config)
 local WallMemory = require(game:GetService("ReplicatedStorage").Movement.WallMemory)
 local SharedUtils = require(game:GetService("ReplicatedStorage").SharedUtils)
+local ParkourSurfaceGate = require(game:GetService("ReplicatedStorage").Movement.ParkourSurfaceGate)
 
 local Climb = {}
 
@@ -80,7 +81,10 @@ local function findClimbable(root)
 		if result and result.Instance then
 			-- Check if the part has the "Climbable" tag
 			local CollectionService = game:GetService("CollectionService")
-			if CollectionService:HasTag(result.Instance, "Climbable") then
+			if
+				CollectionService:HasTag(result.Instance, "Climbable")
+				and ParkourSurfaceGate.isMechanicAllowed(result.Instance, "Climb")
+			then
 				return result
 			end
 		end

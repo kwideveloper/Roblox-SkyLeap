@@ -10,9 +10,17 @@ local Config = require(ReplicatedStorage.Movement.Config)
 local Fly = {}
 
 -- Configuration
-local FLY_SPEED = 80 -- studs per second (increased from 50)
-local FLY_ACCELERATION = 120 -- acceleration rate (increased from 100)
+local FLY_SPEED = 80 -- studs per second (baseline horizontal when not ramping W)
+local FLY_ACCELERATION = 120 -- how fast velocity catches the target
 local FLY_BRAKE_FACTOR = 0.85 -- deceleration when no input
+
+-- W held: horizontal speed ramps from 1x to max over RAMP seconds; resets when W is released
+local FLY_FORWARD_RAMP_SECONDS = 3.5
+local FLY_FORWARD_MAX_MULTIPLIER = 2.75
+
+-- Space held: upward speed ramps from 1x to max over RAMP seconds; resets when Space is released
+local FLY_UP_RAMP_SECONDS = 2.75
+local FLY_UP_MAX_MULTIPLIER = 2.5
 
 -- Active flying state per character
 local activeFlying = {}
@@ -35,6 +43,8 @@ function Fly.start(character)
 		activeFlying[character] = {
 			originalGravity = workspace.Gravity,
 			velocity = Vector3.new(0, 0, 0),
+			forwardHoldTime = 0,
+			upHoldTime = 0,
 		}
 	end
 
@@ -139,65 +149,94 @@ function Fly.update(character, dt)
 		return
 	end
 
-	-- Get camera vectors
+	-- Camera vectors; movement on horizontal plane (WASD) separate from world vertical (Space/Shift)
 	local cameraCFrame = camera.CFrame
 	local forward = cameraCFrame.LookVector
 	local right = cameraCFrame.RightVector
-	local up = Vector3.new(0, 1, 0)
+	local forwardFlat = Vector3.new(forward.X, 0, forward.Z)
+	if forwardFlat.Magnitude > 0.01 then
+		forwardFlat = forwardFlat.Unit
+	else
+		forwardFlat = Vector3.new(0, 0, -1)
+	end
+	local rightFlat = Vector3.new(right.X, 0, right.Z)
+	if rightFlat.Magnitude > 0.01 then
+		rightFlat = rightFlat.Unit
+	else
+		rightFlat = Vector3.new(1, 0, 0)
+	end
 
-	-- Calculate desired direction based on input (use UserInputService directly)
-	local desiredDirection = Vector3.new(0, 0, 0)
+	local wDown = UserInputService:IsKeyDown(Enum.KeyCode.W)
+	local spaceDown = UserInputService:IsKeyDown(Enum.KeyCode.Space)
 
-	-- Forward/backward (W/S)
-	if UserInputService:IsKeyDown(Enum.KeyCode.W) then
-		desiredDirection = desiredDirection + forward
+	state.forwardHoldTime = state.forwardHoldTime or 0
+	state.upHoldTime = state.upHoldTime or 0
+
+	-- Ramp timers: only increase while key held; instant reset to baseline when released
+	if wDown then
+		state.forwardHoldTime = math.min(state.forwardHoldTime + dt, FLY_FORWARD_RAMP_SECONDS)
+	else
+		state.forwardHoldTime = 0
+	end
+	if spaceDown then
+		state.upHoldTime = math.min(state.upHoldTime + dt, FLY_UP_RAMP_SECONDS)
+	else
+		state.upHoldTime = 0
+	end
+
+	local forwardT = FLY_FORWARD_RAMP_SECONDS > 0 and (state.forwardHoldTime / FLY_FORWARD_RAMP_SECONDS) or 0
+	forwardT = math.clamp(forwardT, 0, 1)
+	local forwardMult = 1 + (FLY_FORWARD_MAX_MULTIPLIER - 1) * forwardT
+
+	local upT = FLY_UP_RAMP_SECONDS > 0 and (state.upHoldTime / FLY_UP_RAMP_SECONDS) or 0
+	upT = math.clamp(upT, 0, 1)
+	local upMult = 1 + (FLY_UP_MAX_MULTIPLIER - 1) * upT
+
+	local flatMove = Vector3.zero
+	if wDown then
+		flatMove = flatMove + forwardFlat
 	end
 	if UserInputService:IsKeyDown(Enum.KeyCode.S) then
-		desiredDirection = desiredDirection - forward
+		flatMove = flatMove - forwardFlat
 	end
-
-	-- Left/right (A/D)
 	if UserInputService:IsKeyDown(Enum.KeyCode.D) then
-		desiredDirection = desiredDirection + right
+		flatMove = flatMove + rightFlat
 	end
 	if UserInputService:IsKeyDown(Enum.KeyCode.A) then
-		desiredDirection = desiredDirection - right
+		flatMove = flatMove - rightFlat
 	end
 
-	-- Up/down (Space/Shift)
-	if UserInputService:IsKeyDown(Enum.KeyCode.Space) then
-		desiredDirection = desiredDirection + up
+	local flatSpeed = FLY_SPEED
+	if wDown then
+		flatSpeed = FLY_SPEED * forwardMult
+	end
+
+	local targetFlat = Vector3.zero
+	if flatMove.Magnitude > 0.01 then
+		targetFlat = flatMove.Unit * flatSpeed
+	end
+
+	local targetY = 0
+	if spaceDown then
+		targetY = FLY_SPEED * upMult
 	elseif UserInputService:IsKeyDown(Enum.KeyCode.LeftShift) then
-		desiredDirection = desiredDirection - up
+		targetY = -FLY_SPEED
 	end
 
-	-- Normalize direction
-	if desiredDirection.Magnitude > 0.1 then
-		desiredDirection = desiredDirection.Unit
-	end
+	local targetVelocity = Vector3.new(targetFlat.X, targetY, targetFlat.Z)
 
-	-- Calculate target velocity
-	local targetVelocity = desiredDirection * FLY_SPEED
-
-	-- Smoothly interpolate current velocity towards target
 	local currentVel = state.velocity
 	local newVelocity = currentVel
 
-	if desiredDirection.Magnitude > 0.1 then
-		-- Accelerate towards target
+	local hasInput = flatMove.Magnitude > 0.01 or spaceDown or UserInputService:IsKeyDown(Enum.KeyCode.LeftShift)
+	if hasInput then
 		local accel = FLY_ACCELERATION * dt
-		local direction = (targetVelocity - currentVel)
-		if direction.Magnitude > accel then
-			direction = direction.Unit * accel
+		local delta = targetVelocity - currentVel
+		if delta.Magnitude > accel then
+			delta = delta.Unit * accel
 		end
-		newVelocity = currentVel + direction
-
-		-- Clamp to max speed
-		if newVelocity.Magnitude > FLY_SPEED then
-			newVelocity = newVelocity.Unit * FLY_SPEED
-		end
+		newVelocity = currentVel + delta
 	else
-		-- Brake when no input
 		newVelocity = currentVel * FLY_BRAKE_FACTOR
 	end
 

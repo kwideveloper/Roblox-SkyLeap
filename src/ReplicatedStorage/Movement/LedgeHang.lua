@@ -4,6 +4,7 @@
 local Config = require(game:GetService("ReplicatedStorage").Movement.Config)
 local Animations = require(game:GetService("ReplicatedStorage").Movement.Animations)
 local SharedUtils = require(game:GetService("ReplicatedStorage").SharedUtils)
+local ParkourSurfaceGate = require(game:GetService("ReplicatedStorage").Movement.ParkourSurfaceGate)
 local RunService = game:GetService("RunService")
 
 -- Get remotes for server synchronization
@@ -222,6 +223,9 @@ function LedgeHang.detectLedgeForHang(character)
 	if not hit or not hit.Instance or not hit.Instance.CanCollide then
 		return false
 	end
+	if not ParkourSurfaceGate.isMechanicAllowed(hit.Instance, "LedgeHang") then
+		return false
+	end
 
 	-- Find top of the obstacle
 	local topY = nil
@@ -322,6 +326,10 @@ function LedgeHang.tryStartFromMantleData(character, hitRes, ledgeY)
 	-- Check wall-specific cooldown
 	local wallInstance = hitRes and hitRes.Instance
 	if wallInstance and hasWallCooldown(character, wallInstance) then
+		return false
+	end
+
+	if hitRes and hitRes.Instance and not ParkourSurfaceGate.isMechanicAllowed(hitRes.Instance, "LedgeHang") then
 		return false
 	end
 

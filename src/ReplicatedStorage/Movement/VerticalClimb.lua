@@ -4,6 +4,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Config = require(ReplicatedStorage.Movement.Config)
 local Animations = require(ReplicatedStorage.Movement.Animations)
 local SharedUtils = require(ReplicatedStorage.SharedUtils)
+local ParkourSurfaceGate = require(ReplicatedStorage.Movement.ParkourSurfaceGate)
 
 local VerticalClimb = {}
 
@@ -42,9 +43,7 @@ local function findFrontWall(root)
 	for _, o in ipairs(origins) do
 		local h = workspace:Raycast(o, look * dist, params)
 		if h and h.Instance and h.Instance.CanCollide then
-			-- Check if wall has VerticalClimb attribute (disabled only if explicitly set to false)
-			local verticalClimbAttr = h.Instance:GetAttribute("VerticalClimb")
-			if verticalClimbAttr ~= false then
+			if ParkourSurfaceGate.isMechanicAllowed(h.Instance, "VerticalClimb") then
 				best = h
 				break
 			end
@@ -209,8 +208,7 @@ function VerticalClimb.maintain(character, dt)
 		return false
 	end
 	-- Double-check that wall still allows climbing (in case attribute changed)
-	local verticalClimbAttr = hit.Instance:GetAttribute("VerticalClimb")
-	if verticalClimbAttr == false then
+	if not ParkourSurfaceGate.isMechanicAllowed(hit.Instance, "VerticalClimb") then
 		stopVerticalClimbAnimation(character)
 		active[character] = nil
 		cooldownUntil[character] = os.clock() + (Config.VerticalClimbCooldownSeconds or 0.6)
