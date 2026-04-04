@@ -5,7 +5,11 @@ local ServerScriptService = game:GetService("ServerScriptService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Workspace = game:GetService("Workspace")
 
-local PlayerProfile = require(ServerScriptService:WaitForChild("PlayerProfile"))
+local playerProfileModule = ServerScriptService:FindFirstChild("PlayerProfile")
+local PlayerProfile = playerProfileModule and require(playerProfileModule)
+if not PlayerProfile then
+	warn("[BombLevelController] PlayerProfile module not found in ServerScriptService")
+end
 
 local BombMatchManager = require(ReplicatedStorage:WaitForChild("BombTag"):WaitForChild("BombMatchManager"))
 
@@ -1727,6 +1731,10 @@ end
 
 function BombLevelController:_awardCoinsToPlayers(players, coins)
 	if coins <= 0 or not players then
+		return
+	end
+	if not PlayerProfile then
+		warn("[BombLevelController] PlayerProfile missing; skipping coin awards")
 		return
 	end
 

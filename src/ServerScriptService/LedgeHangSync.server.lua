@@ -70,15 +70,14 @@ LedgeHangStart.OnServerEvent:Connect(
 		-- Initialize player stamina if not exists
 		initializePlayerStamina(player)
 
-		-- Check if player has enough stamina to start hanging
-		local staminaCost = Config.LedgeHangStaminaCost or 5
-		if playerStamina[player].current < staminaCost then
-			warn("[LedgeHangSync] Player", player.Name, "doesn't have enough stamina to start hanging")
-			return
+		if Config.StaminaEnabled == true then
+			local staminaCost = Config.LedgeHangStaminaCost or 5
+			if playerStamina[player].current < staminaCost then
+				warn("[LedgeHangSync] Player", player.Name, "doesn't have enough stamina to start hanging")
+				return
+			end
+			playerStamina[player].current = math.max(0, playerStamina[player].current - staminaCost)
 		end
-
-		-- Deduct stamina cost
-		playerStamina[player].current = math.max(0, playerStamina[player].current - staminaCost)
 
 		-- Calculate precise ledge edge position using the character's approach position
 		-- This ensures the character grabs exactly at the edge where they reached the ledge
@@ -201,16 +200,11 @@ LedgeHangMove.OnServerEvent:Connect(function(player, newPosition, forwardDirecti
 		return
 	end
 
-	-- Update hang data
+	-- Update hang data only. Do NOT set root.CFrame here: the client already moves the
+	-- local character every frame; server writes fight replication and cause visible shake.
 	hangData.hangPosition = newPosition
 	hangData.forwardDirection = forwardDirection
 	hangData.lastMoveTime = os.clock()
-
-	-- Update character position on server
-	root.CFrame = CFrame.lookAt(newPosition, newPosition + forwardDirection)
-
-	-- Update hang data position
-	hangData.hangPosition = newPosition
 
 	-- Broadcast movement to all other clients
 	for _, otherPlayer in ipairs(Players:GetPlayers()) do
@@ -280,40 +274,31 @@ end)
 local RunService = game:GetService("RunService")
 RunService.Heartbeat:Connect(function(dt)
 	for player, hangData in pairs(activeHangs) do
-		-- Initialize stamina if not exists
 		initializePlayerStamina(player)
 
-		-- Drain stamina while hanging
-		local drainRate = Config.LedgeHangStaminaDrainPerSecond or 5
-		playerStamina[player].current = math.max(0, playerStamina[player].current - drainRate * dt)
+		if Config.StaminaEnabled == true then
+			local drainRate = Config.LedgeHangStaminaDrainPerSecond or 5
+			playerStamina[player].current = math.max(0, playerStamina[player].current - drainRate * dt)
 
-		-- Auto-release if no stamina
-		if playerStamina[player].current <= 0 then
-			-- Stop the hang on server side
-			local character = player.Character
-			if character then
-				local root = character:FindFirstChild("HumanoidRootPart")
-				local humanoid = character:FindFirstChildOfClass("Humanoid")
-				if root and humanoid then
-					-- Restore character state
-					humanoid.AutoRotate = true
-					root.Anchored = false
-
-					-- Restore collisions
-					for _, part in ipairs(character:GetChildren()) do
-						if part:IsA("BasePart") and part.Name ~= "HumanoidRootPart" then
-							part.CanCollide = true
+			if playerStamina[player].current <= 0 then
+				local character = player.Character
+				if character then
+					local root = character:FindFirstChild("HumanoidRootPart")
+					local humanoid = character:FindFirstChildOfClass("Humanoid")
+					if root and humanoid then
+						humanoid.AutoRotate = true
+						root.Anchored = false
+						for _, part in ipairs(character:GetChildren()) do
+							if part:IsA("BasePart") and part.Name ~= "HumanoidRootPart" then
+								part.CanCollide = true
+							end
 						end
 					end
 				end
-			end
-
-			-- Clear hang data
-			activeHangs[player] = nil
-
-			-- Broadcast stop to all clients (including the player being released)
-			for _, otherPlayer in ipairs(Players:GetPlayers()) do
-				LedgeHangStop:FireClient(otherPlayer, player, true) -- true = stamina depletion release
+				activeHangs[player] = nil
+				for _, otherPlayer in ipairs(Players:GetPlayers()) do
+					LedgeHangStop:FireClient(otherPlayer, player, true)
+				end
 			end
 		end
 	end

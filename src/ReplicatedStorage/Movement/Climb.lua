@@ -4,10 +4,22 @@ local Config = require(game:GetService("ReplicatedStorage").Movement.Config)
 local WallMemory = require(game:GetService("ReplicatedStorage").Movement.WallMemory)
 local SharedUtils = require(game:GetService("ReplicatedStorage").SharedUtils)
 local ParkourSurfaceGate = require(game:GetService("ReplicatedStorage").Movement.ParkourSurfaceGate)
+local RunService = game:GetService("RunService")
 
 local Climb = {}
 
 local active = {}
+local lastClimbStopAt = {} -- [character] = os.clock() when Climb.stop ran
+
+local function shouldClimbTrace()
+	if Config.DebugClimb or Config.ClimbTraceEnabled then
+		return true
+	end
+	if Config.ClimbTraceInStudio == false then
+		return false
+	end
+	return RunService:IsStudio()
+end
 
 local function cleanupClimbAnimations(character)
 	pcall(function()
@@ -79,13 +91,11 @@ local function findClimbable(root)
 	for _, dir in ipairs(directions) do
 		local result = workspace:Raycast(root.Position, dir * Config.ClimbDetectionDistance, params)
 		if result and result.Instance then
-			-- Check if the part has the "Climbable" tag
 			local CollectionService = game:GetService("CollectionService")
-			if
-				CollectionService:HasTag(result.Instance, "Climbable")
-				and ParkourSurfaceGate.isMechanicAllowed(result.Instance, "Climb")
-			then
-				return result
+			if CollectionService:HasTag(result.Instance, "Climbable") then
+				if ParkourSurfaceGate.isClimbAllowedForTaggedClimbable(result.Instance) then
+					return result
+				end
 			end
 		end
 	end
@@ -93,6 +103,62 @@ local function findClimbable(root)
 end
 
 -- Find ground level below the player using raycast
+-- World-space highest Y of the part's oriented box (UpVector*size/2 is wrong when wall height is along X or Z)
+local function computeClimbedPartTopY(inst)
+	if inst and inst:IsA("BasePart") then
+		local cf = inst.CFrame
+		local s = inst.Size
+		local hx, hy, hz = s.X * 0.5, s.Y * 0.5, s.Z * 0.5
+		local r = cf.RightVector
+		local u = cf.UpVector
+		local l = cf.LookVector
+		local p = cf.Position
+		local extentY = math.abs(u.Y) * hy + math.abs(r.Y) * hx + math.abs(l.Y) * hz
+		return p.Y + extentY
+	end
+	return nil
+end
+
+local function isRootNearClimbedWallTop(root, climbedPart)
+	if not root or not climbedPart then
+		return false
+	end
+	if Config.ClimbMantleRequireNearClimbedWallTop == false then
+		return true
+	end
+	local wallTopY = computeClimbedPartTopY(climbedPart)
+	if not wallTopY then
+		return false
+	end
+	local clearance = wallTopY - root.Position.Y
+	local minC = Config.ClimbMantleMinClearanceBelowWallTop or -2
+	local maxC = Config.ClimbMantleMaxClearanceBelowWallTop or 3.25
+	return clearance >= minC and clearance <= maxC
+end
+
+-- Tight lip band + optional match of detector topY to this part's top (blocks false ledges mid-wall)
+local function climbFinishLipAllowsHandoff(wallPart, clearanceBelowTop, detectorTopY)
+	if not wallPart or clearanceBelowTop == nil then
+		return false
+	end
+	local mn = Config.ClimbFinishMantleClearanceMin or -0.5
+	local mx = Config.ClimbFinishMantleClearanceMax or 1.35
+	if clearanceBelowTop < mn or clearanceBelowTop > mx then
+		return false
+	end
+	if detectorTopY ~= nil then
+		local wTop = computeClimbedPartTopY(wallPart)
+		if not wTop then
+			return false
+		end
+		local tol = Config.ClimbFinishMantleTopYTolerance or 1.25
+		if math.abs(detectorTopY - wTop) > tol then
+			return false
+		end
+	end
+	return true
+end
+
 local function findGroundLevel(root)
 	local params = SharedUtils.createParkourRaycastParams(root.Parent)
 
@@ -237,7 +303,29 @@ function Climb.tryStart(character)
 	if Config.DebugClimb then
 		print("[Climb] tryStart on", tostring(hit.Instance), "normal", hit.Normal, "from ground:", isOnGround)
 	end
+	if shouldClimbTrace() then
+		local topY = computeClimbedPartTopY(hit.Instance)
+		print(
+			string.format(
+				"[Climb:trace] START wall=%s topY(worldAABB)=%s normal=%s",
+				hit.Instance:GetFullName(),
+				topY and string.format("%.2f", topY) or "nil",
+				tostring(hit.Normal)
+			)
+		)
+	end
 	return true
+end
+
+function Climb.getTimeSinceLastClimbStop(character)
+	if not character then
+		return math.huge
+	end
+	local t = lastClimbStopAt[character]
+	if not t then
+		return math.huge
+	end
+	return os.clock() - t
 end
 
 function Climb.stop(character)
@@ -245,6 +333,7 @@ function Climb.stop(character)
 	if not data then
 		return
 	end
+	lastClimbStopAt[character] = os.clock()
 	local root, humanoid = getParts(character)
 	if humanoid then
 		-- Restore all previous states properly
@@ -515,57 +604,170 @@ function Climb.maintain(character, input)
 		end
 	end
 
+	-- Mantle/ledge helpers use rays and box overlap; mid-wall false positives are common (trims, gaps, CanQuery=false obstacles).
+	-- Only treat mantle integration as valid when the root is near the real top of the *climbed* part.
+	local nearWallTopForMantle = isRootNearClimbedWallTop(root, data.instance)
+	if Config.DebugClimb then
+		local wt = computeClimbedPartTopY(data.instance)
+		if wt then
+			print(
+				string.format(
+					"[Climb] mantleGate part=%s wallTopY=%.3f rootY=%.3f clearance=%.3f nearTop=%s",
+					data.instance.Name,
+					wt,
+					root.Position.Y,
+					wt - root.Position.Y,
+					tostring(nearWallTopForMantle)
+				)
+			)
+		end
+	end
+
 	-- Check if player is very close to a ledge edge during climb
 	-- This prevents automatic mantle execution while still allowing manual input
 	local isNearLedgeEdge = false
 	local shouldLimitMovement = false
-	local shouldAutoDisableClimbForMantle = false
+	local shouldStopAndMantle = false
 
-	-- First, check if we should auto-disable climb to allow mantle execution
-	if Config.ClimbMantleIntegrationEnabled and Config.ClimbAutoDisableForMantle then
+	local hEarly, vEarly = 0, 0
+	if typeof(input) == "table" then
+		hEarly = input.h or 0
+		vEarly = input.v or 0
+	end
+
+	local wallTopYForFinish = computeClimbedPartTopY(data.instance)
+	local clearanceToTop = wallTopYForFinish and (wallTopYForFinish - root.Position.Y) or nil
+	local lipOkNoDetector = climbFinishLipAllowsHandoff(data.instance, clearanceToTop, nil)
+
+	-- Ray-based mantle: must also pass lip band + topY match (otherwise false ledges stop climb mid-wall)
+	if Config.ClimbMantleIntegrationEnabled and nearWallTopForMantle and Config.ClimbAutoDisableForMantle then
 		pcall(function()
 			local Abilities = require(game:GetService("ReplicatedStorage").Movement.Abilities)
 			if Abilities and Abilities.detectLedgeForMantle then
 				local ledgeOk, hitRes, topY = Abilities.detectLedgeForMantle(root)
-				if ledgeOk then
-					-- Check if the ledge is at the correct distance for mantle execution
+				if Config.DebugClimb then
+					print(
+						"[Climb] detectLedgeForMantle ledgeOk=",
+						tostring(ledgeOk),
+						"hit=",
+						hitRes and hitRes.Instance and hitRes.Instance.Name or "nil",
+						"topY=",
+						topY
+					)
+				end
+				if ledgeOk and topY then
 					local toWall = (hitRes.Position - root.Position)
 					local toWallHoriz = Vector3.new(toWall.X, 0, toWall.Z)
 					local distanceToLedge = toWallHoriz.Magnitude
 					local ledgeHeightDiff = topY - root.Position.Y
-
-					-- Use mantle configuration to determine when to auto-disable climb
 					local mantleDetectionDistance = Config.MantleDetectionDistance or 4.0
 					local mantleMaxAboveWaist = Config.MantleAboveWaistWhileClimbing or 5.0
-
-					-- Check if we're at the perfect distance for mantle execution
-					if distanceToLedge <= mantleDetectionDistance and ledgeHeightDiff <= mantleMaxAboveWaist then
-						shouldAutoDisableClimbForMantle = true
+					local lipAndTopOk = climbFinishLipAllowsHandoff(data.instance, clearanceToTop, topY)
+					if
+						distanceToLedge <= mantleDetectionDistance
+						and ledgeHeightDiff <= mantleMaxAboveWaist
+						and lipAndTopOk
+					then
+						shouldStopAndMantle = true
 						if Config.DebugClimb then
 							print(
-								"[Climb] Auto-disable for mantle (climbing) - distance:",
+								"[Climb] Auto-disable for mantle (ledge detect + lip) - distance:",
 								distanceToLedge,
 								"height diff:",
 								ledgeHeightDiff,
-								"mantle detection distance:",
-								mantleDetectionDistance,
-								"mantle above waist while climbing:",
-								mantleMaxAboveWaist
+								"lipOk:",
+								lipAndTopOk
 							)
 						end
+					elseif Config.DebugClimb and ledgeOk then
+						print(
+							"[Climb] Ledge detect ignored (not at climbed part lip / top mismatch) lipAndTopOk=",
+							tostring(lipAndTopOk),
+							"clearance=",
+							clearanceToTop
+						)
 					end
 				end
 			end
 		end)
 	end
 
-	-- If we should auto-disable climb for mantle, do it immediately
-	if shouldAutoDisableClimbForMantle then
+	if
+		not shouldStopAndMantle
+		and Config.ClimbMantleIntegrationEnabled
+		and Config.ClimbAutoMantleAtWallTop ~= false
+		and nearWallTopForMantle
+		and lipOkNoDetector
+		and vEarly >= -0.01
+	then
+		shouldStopAndMantle = true
 		if Config.DebugClimb then
-			print("[Climb] Auto-disabling climb to allow mantle execution")
+			print(
+				"[Climb] Auto mantle at Climbable lip | clearance=",
+				clearanceToTop,
+				"band=[",
+				Config.ClimbFinishMantleClearanceMin,
+				",",
+				Config.ClimbFinishMantleClearanceMax,
+				"]"
+			)
+		end
+	end
+
+	if shouldClimbTrace() then
+		local now = os.clock()
+		data._climbTraceLast = data._climbTraceLast or 0
+		local intv = Config.ClimbTraceIntervalSeconds or 0.12
+		if now - data._climbTraceLast >= intv then
+			data._climbTraceLast = now
+			print(
+				string.format(
+					"[Climb:trace] clear=%.2f lip=%s stopMantle=%s rootY=%.2f wallTop=%.2f v=%.2f nearTopZone=%s wall=%s",
+					clearanceToTop or -1,
+					tostring(lipOkNoDetector),
+					tostring(shouldStopAndMantle),
+					root.Position.Y,
+					wallTopYForFinish or -1,
+					vEarly,
+					tostring(nearWallTopForMantle),
+					data.instance.Name
+				)
+			)
+		end
+	end
+
+	if shouldStopAndMantle then
+		local wallPart = data.instance
+		local wallNormal = data.normal
+		local contactPos = hit.Position
+		local topYWorld = computeClimbedPartTopY(wallPart)
+		local charRef = character
+		if Config.DebugClimb then
+			print("[Climb] Stopping climb and invoking climb-finish mantle")
 		end
 		Climb.stop(character)
-		return -- Exit the maintain function
+		task.defer(function()
+			if not charRef.Parent then
+				return
+			end
+			local Abilities = require(game:GetService("ReplicatedStorage").Movement.Abilities)
+			if Abilities and Abilities.tryMantle then
+				local syntheticHit = {
+					Instance = wallPart,
+					Position = contactPos,
+					Normal = wallNormal,
+				}
+				local ok = Abilities.tryMantle(charRef, {
+					climbFinish = true,
+					hitRes = syntheticHit,
+					topY = topYWorld,
+				})
+				if Config.DebugClimb and not ok then
+					print("[Climb] climb-finish tryMantle returned false (clearance/gate/cooldown)")
+				end
+			end
+		end)
+		return
 	end
 
 	-- Then check for ledge edge detection (if enabled)
@@ -573,6 +775,7 @@ function Climb.maintain(character, input)
 		Config.ClimbMantleIntegrationEnabled
 		and Config.ClimbLedgeEdgeDetectionEnabled
 		and not Config.ClimbLedgeEdgeDetectionCompletelyDisabled
+		and nearWallTopForMantle
 	then
 		pcall(function()
 			local Abilities = require(game:GetService("ReplicatedStorage").Movement.Abilities)
@@ -691,17 +894,19 @@ function Climb.maintain(character, input)
 	root.CFrame = CFrame.lookAt(root.Position, root.Position - n, Vector3.yAxis)
 
 	-- Drain stamina; if depleted, stop climbing immediately
-	do
-		local folder = game:GetService("ReplicatedStorage"):FindFirstChild("ClientState")
-		local staminaValue = folder and folder:FindFirstChild("Stamina")
-		if staminaValue then
-			-- Approximate dt using Heartbeat delta from RunService if not passed here
-			local hb = game:GetService("RunService").Heartbeat:Wait()
-			local delta = typeof(hb) == "number" and hb or 0.016
-			staminaValue.Value = math.max(0, staminaValue.Value - (Config.ClimbStaminaDrainPerSecond * delta))
-			if staminaValue.Value <= 0 then
-				Climb.stop(character)
-				return false
+	if Config.StaminaEnabled == true then
+		do
+			local folder = game:GetService("ReplicatedStorage"):FindFirstChild("ClientState")
+			local staminaValue = folder and folder:FindFirstChild("Stamina")
+			if staminaValue then
+				-- Approximate dt using Heartbeat delta from RunService if not passed here
+				local hb = game:GetService("RunService").Heartbeat:Wait()
+				local delta = typeof(hb) == "number" and hb or 0.016
+				staminaValue.Value = math.max(0, staminaValue.Value - (Config.ClimbStaminaDrainPerSecond * delta))
+				if staminaValue.Value <= 0 then
+					Climb.stop(character)
+					return false
+				end
 			end
 		end
 	end
@@ -736,7 +941,8 @@ function Climb.tryHop(character)
 				local folder = game:GetService("ReplicatedStorage"):FindFirstChild("ClientState")
 				local staminaValue = folder and folder:FindFirstChild("Stamina")
 				local staminaCost = Config.ClimbWallJumpStaminaCost or 0
-				local hasStamina = staminaCost == 0 or (staminaValue and staminaValue.Value >= staminaCost)
+				local stamOn = Config.StaminaEnabled == true
+				local hasStamina = not stamOn or staminaCost == 0 or (staminaValue and staminaValue.Value >= staminaCost)
 
 				if hasStamina then
 					-- Execute walljump using the normal system
@@ -744,7 +950,7 @@ function Climb.tryHop(character)
 					WallJump.tryJump(character)
 
 					-- Consume stamina if configured
-					if staminaCost > 0 and staminaValue then
+					if stamOn and staminaCost > 0 and staminaValue then
 						staminaValue.Value = math.max(0, staminaValue.Value - staminaCost)
 					end
 				end

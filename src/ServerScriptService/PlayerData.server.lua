@@ -4,13 +4,26 @@ local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ServerScriptService = game:GetService("ServerScriptService")
 
-local PlayerProfile = require(ServerScriptService:WaitForChild("PlayerProfile"))
+local playerProfileModule = ServerScriptService:FindFirstChild("PlayerProfile")
+if not playerProfileModule then
+	warn("[PlayerData] PlayerProfile module not found in ServerScriptService")
+	return
+end
+local PlayerProfile = require(playerProfileModule)
 
-local remotes = ReplicatedStorage:WaitForChild("Remotes")
-local comboReport = remotes:WaitForChild("MaxComboReport")
-local styleCommit = remotes:WaitForChild("StyleCommit")
-local audioLoaded = remotes:WaitForChild("AudioSettingsLoaded")
-local setAudio = remotes:WaitForChild("SetAudioSettings")
+local remotes = ReplicatedStorage:WaitForChild("Remotes", 30)
+if not remotes then
+	warn("[PlayerData] Remotes folder not found under ReplicatedStorage (timeout)")
+	return
+end
+local comboReport = remotes:WaitForChild("MaxComboReport", 10)
+local styleCommit = remotes:WaitForChild("StyleCommit", 10)
+local audioLoaded = remotes:WaitForChild("AudioSettingsLoaded", 10)
+local setAudio = remotes:WaitForChild("SetAudioSettings", 10)
+if not (comboReport and styleCommit and audioLoaded and setAudio) then
+	warn("[PlayerData] One or more required RemoteEvents missing under Remotes")
+	return
+end
 
 local sessionState = {}
 
@@ -97,11 +110,9 @@ setAudio.OnServerEvent:Connect(function(player, payload)
 		return
 	end
 	local profile = PlayerProfile.load(player.UserId)
-	profile.settings = profile.settings
-		or {
-			cameraFov = profile.settings and profile.settings.cameraFov or nil,
-			uiScale = profile.settings and profile.settings.uiScale or nil,
-		}
+	if type(profile.settings) ~= "table" then
+		profile.settings = {}
+	end
 	local changed = false
 	if music ~= nil then
 		music = math.clamp(music, 0, 1)

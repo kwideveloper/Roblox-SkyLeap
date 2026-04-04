@@ -7,6 +7,18 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local CollectionService = game:GetService("CollectionService")
 
 local Config = require(ReplicatedStorage.Movement.Config)
+
+local function debugFxPrint(...)
+	if Config.DebugFX then
+		print(...)
+	end
+end
+
+local function debugFlyPrint(...)
+	if Config.DebugFly then
+		print(...)
+	end
+end
 local Animations = require(ReplicatedStorage.Movement.Animations)
 local Momentum = require(ReplicatedStorage.Movement.Momentum)
 local Stamina = require(ReplicatedStorage.Movement.Stamina)
@@ -46,6 +58,11 @@ local function isBombTagModeActive()
 	return false
 end
 
+-- Stamina costs/regen only when enabled and not in BombTag infinite-stamina mode.
+local function shouldApplyStaminaCosts()
+	return Config.StaminaEnabled == true and not isBombTagModeActive()
+end
+
 -- One-shot FX helper: plays ReplicatedStorage/FX/<name> once at character position
 local function playOneShotFx(character, fxName, customPosition)
 	local root = character and (character:FindFirstChild("HumanoidRootPart") or character.PrimaryPart)
@@ -82,37 +99,37 @@ local function playOneShotFx(character, fxName, customPosition)
 		inst.Parent = fxAnchor
 
 		-- Debug: Print FX info
-		print("[FX DEBUG] Creating FX:", fxName, "at position:", fxPosition)
-		print("[FX DEBUG] Template found:", template.Name, "with children:", #template:GetDescendants())
+		debugFxPrint("[FX DEBUG] Creating FX:", fxName, "at position:", fxPosition)
+		debugFxPrint("[FX DEBUG] Template found:", template.Name, "with children:", #template:GetDescendants())
 
 		-- Emit particles once and play sounds
 		for _, d in ipairs(inst:GetDescendants()) do
 			if d:IsA("ParticleEmitter") then
-				print("[FX DEBUG] Found ParticleEmitter:", d.Name, "Enabled:", d.Enabled)
+				debugFxPrint("[FX DEBUG] Found ParticleEmitter:", d.Name, "Enabled:", d.Enabled)
 				local burst = tonumber(d:GetAttribute("Burst") or 30)
 				-- Enable the emitter first, then emit
 				d.Enabled = true
 				pcall(function()
 					d:Emit(burst)
-					print("[FX DEBUG] Emitted", burst, "particles from", d.Name)
+					debugFxPrint("[FX DEBUG] Emitted", burst, "particles from", d.Name)
 				end)
 			elseif d:IsA("Sound") then
-				print("[FX DEBUG] Found Sound:", d.Name, "Volume:", d.Volume)
+				debugFxPrint("[FX DEBUG] Found Sound:", d.Name, "Volume:", d.Volume)
 				pcall(function()
 					d:Play()
-					print("[FX DEBUG] Playing sound:", d.Name)
+					debugFxPrint("[FX DEBUG] Playing sound:", d.Name)
 				end)
 			elseif d:IsA("Attachment") then
-				print("[FX DEBUG] Found Attachment:", d.Name)
+				debugFxPrint("[FX DEBUG] Found Attachment:", d.Name)
 			else
-				print("[FX DEBUG] Found other:", d.Name, d.ClassName)
+				debugFxPrint("[FX DEBUG] Found other:", d.Name, d.ClassName)
 			end
 		end
 
 		-- Cleanup after a longer lifetime to see if FX appears
 		task.delay(5, function()
 			if fxAnchor then
-				print("[FX DEBUG] Destroying FX anchor for:", fxName)
+				debugFxPrint("[FX DEBUG] Destroying FX anchor for:", fxName)
 				fxAnchor:Destroy()
 			end
 		end)
@@ -123,19 +140,19 @@ local function playOneShotFx(character, fxName, customPosition)
 		inst.Parent = root
 
 		-- Debug fallback FX
-		print("[FX DEBUG] Using fallback: attaching to character root")
+		debugFxPrint("[FX DEBUG] Using fallback: attaching to character root")
 
 		for _, d in ipairs(inst:GetDescendants()) do
 			if d:IsA("ParticleEmitter") then
-				print("[FX DEBUG] Fallback ParticleEmitter:", d.Name, "Enabled:", d.Enabled)
+				debugFxPrint("[FX DEBUG] Fallback ParticleEmitter:", d.Name, "Enabled:", d.Enabled)
 				local burst = tonumber(d:GetAttribute("Burst") or 30)
 				d.Enabled = true
 				pcall(function()
 					d:Emit(burst)
-					print("[FX DEBUG] Fallback emitted", burst, "particles from", d.Name)
+					debugFxPrint("[FX DEBUG] Fallback emitted", burst, "particles from", d.Name)
 				end)
 			elseif d:IsA("Sound") then
-				print("[FX DEBUG] Fallback Sound:", d.Name)
+				debugFxPrint("[FX DEBUG] Fallback Sound:", d.Name)
 				pcall(function()
 					d:Play()
 				end)
@@ -203,11 +220,19 @@ local function hasEnoughClearanceAbove(root, ledgeY, forwardDirection, hitPoint)
 	end
 	return true
 end
-local Remotes = ReplicatedStorage:WaitForChild("Remotes")
-local StyleCommit = Remotes:WaitForChild("StyleCommit")
-local MaxComboReport = Remotes:WaitForChild("MaxComboReport")
-local PadTriggered = Remotes:WaitForChild("PadTriggered")
-local PowerupActivatedEvt = Remotes:WaitForChild("PowerupActivated")
+local Remotes = ReplicatedStorage:WaitForChild("Remotes", 30)
+if not Remotes then
+	warn("[ParkourController] Remotes folder not found under ReplicatedStorage (timeout)")
+	return
+end
+local StyleCommit = Remotes:WaitForChild("StyleCommit", 15)
+local MaxComboReport = Remotes:WaitForChild("MaxComboReport", 15)
+local PadTriggered = Remotes:WaitForChild("PadTriggered", 15)
+local PowerupActivatedEvt = Remotes:WaitForChild("PowerupActivated", 15)
+if not (StyleCommit and MaxComboReport and PadTriggered and PowerupActivatedEvt) then
+	warn("[ParkourController] One or more required remotes missing under Remotes")
+	return
+end
 
 local player = Players.LocalPlayer
 
@@ -1369,12 +1394,10 @@ UserInputService.InputBegan:Connect(function(input, gpe)
 	local character = getCharacter()
 
 	if input.KeyCode == Enum.KeyCode.Q then
-		-- Check if bomb tag is active (infinite stamina)
-		local isBombTagActive = isBombTagModeActive()
+		local applyStam = shouldApplyStaminaCosts()
 
 		-- Dash: only spend stamina if dash actually triggers (respects cooldown)
-		-- Skip stamina check if bomb tag is active (infinite stamina)
-		if isBombTagActive or state.stamina.current >= Config.DashStaminaCost then
+		if not applyStam or state.stamina.current >= Config.DashStaminaCost then
 			local character = getCharacter()
 			if not character then
 				return
@@ -1396,8 +1419,7 @@ UserInputService.InputBegan:Connect(function(input, gpe)
 			local grounded = humanoid.FloorMaterial ~= Enum.Material.Air
 			local didDash = Abilities.tryDash(character)
 			if didDash then
-				-- Only drain stamina if bomb tag is not active
-				if not isBombTagActive then
+				if applyStam then
 					state.stamina.current = math.max(0, state.stamina.current - Config.DashStaminaCost)
 				end
 				DashVfx.playFor(character, Config.DashVfxDuration)
@@ -1446,10 +1468,8 @@ UserInputService.InputBegan:Connect(function(input, gpe)
 						and ((Config.SlideRequireSprint ~= false and sprinting) or (Config.SlideRequireSprint == false and isMoving))
 						and Abilities.isSlideReady()
 					then
-						-- Consume stamina for slide (skip if bomb tag is active)
-						local isBombTagActive = isBombTagModeActive()
-
-						if not isBombTagActive then
+						local applyStam = shouldApplyStaminaCosts()
+						if applyStam then
 							local staminaCost = Config.SlideStaminaCost or 12
 							state.stamina.current = math.max(0, state.stamina.current - staminaCost)
 						end
@@ -1482,13 +1502,13 @@ UserInputService.InputBegan:Connect(function(input, gpe)
 	elseif input.KeyCode == Enum.KeyCode.F then
 		-- Fly only (zipline/climb stay on E)
 		if Fly.isActive(character) then
-			print("[Fly] Stopping flight")
+			debugFlyPrint("[Fly] Stopping flight")
 			Fly.stop(character)
 		else
 			-- Don't start flying if on/near zipline (use E for that)
 			local shouldFly = not (Zipline.isActive(character) or Zipline.isNear(character))
 			if shouldFly then
-				print("[Fly] Starting flight")
+				debugFlyPrint("[Fly] Starting flight")
 				if Climb.isActive(character) then
 					Climb.stop(character)
 					cleanupClimbAnimation(character)
@@ -1512,16 +1532,17 @@ UserInputService.InputBegan:Connect(function(input, gpe)
 				if humanoid then
 					local success = Fly.start(character)
 					if success then
-						print("[Fly] Flight started successfully")
+						debugFlyPrint("[Fly] Flight started successfully")
 					else
-						print("[Fly] Failed to start flight")
+						debugFlyPrint("[Fly] Failed to start flight")
 					end
 				else
-					print("[Fly] No humanoid found")
+					debugFlyPrint("[Fly] No humanoid found")
 				end
 			end
 		end
 	elseif input.KeyCode == Enum.KeyCode.E then
+		local applyStam = shouldApplyStaminaCosts()
 		-- Zipline and climb (not fly — fly is F)
 		if Zipline.isActive(character) then
 			Zipline.stop(character)
@@ -1545,15 +1566,17 @@ UserInputService.InputBegan:Connect(function(input, gpe)
 				Climb.stop(character)
 				cleanupClimbAnimation(character)
 			else
-				if state.stamina.current >= Config.ClimbMinStamina then
+				if not applyStam or state.stamina.current >= Config.ClimbMinStamina then
 					if WallJump.isWallSliding and WallJump.isWallSliding(character) then
 						WallJump.stopSlide(character)
 					end
 					stopConflictingAnimations(character, "climbing")
 					if Climb.tryStart(character) then
-						state.stamina.current = state.stamina.current - (Config.ClimbStaminaDrainPerSecond * 0.1)
-						if state.stamina.current < 0 then
-							state.stamina.current = 0
+						if applyStam then
+							state.stamina.current = state.stamina.current - (Config.ClimbStaminaDrainPerSecond * 0.1)
+							if state.stamina.current < 0 then
+								state.stamina.current = 0
+							end
 						end
 					end
 				end
@@ -1591,6 +1614,8 @@ UserInputService.InputBegan:Connect(function(input, gpe)
 			end
 		end
 
+		local applyStam = shouldApplyStaminaCosts()
+
 		-- Handle ledge hanging input FIRST (highest priority)
 		if LedgeHang.isActive(character) then
 			-- Check for directional input combinations
@@ -1606,7 +1631,9 @@ UserInputService.InputBegan:Connect(function(input, gpe)
 			if wPressed then
 				didDirectionalJump = LedgeHang.tryDirectionalJump(character, "up")
 				if didDirectionalJump then
-					state.stamina.current = math.max(0, state.stamina.current - (Config.LedgeHangJumpStaminaCost or 10))
+					if applyStam then
+						state.stamina.current = math.max(0, state.stamina.current - (Config.LedgeHangJumpStaminaCost or 10))
+					end
 					Style.addEvent(state.style, "LedgeJump", 1)
 					-- Update HUD values immediately
 					if state.styleScoreValue then
@@ -1619,7 +1646,9 @@ UserInputService.InputBegan:Connect(function(input, gpe)
 			elseif aPressed then
 				didDirectionalJump = LedgeHang.tryDirectionalJump(character, "left")
 				if didDirectionalJump then
-					state.stamina.current = math.max(0, state.stamina.current - (Config.LedgeHangJumpStaminaCost or 10))
+					if applyStam then
+						state.stamina.current = math.max(0, state.stamina.current - (Config.LedgeHangJumpStaminaCost or 10))
+					end
 					Style.addEvent(state.style, "LedgeJump", 1)
 					-- Update HUD values immediately
 					if state.styleScoreValue then
@@ -1632,7 +1661,9 @@ UserInputService.InputBegan:Connect(function(input, gpe)
 			elseif dPressed then
 				didDirectionalJump = LedgeHang.tryDirectionalJump(character, "right")
 				if didDirectionalJump then
-					state.stamina.current = math.max(0, state.stamina.current - (Config.LedgeHangJumpStaminaCost or 10))
+					if applyStam then
+						state.stamina.current = math.max(0, state.stamina.current - (Config.LedgeHangJumpStaminaCost or 10))
+					end
 					Style.addEvent(state.style, "LedgeJump", 1)
 					-- Update HUD values immediately
 					if state.styleScoreValue then
@@ -1645,7 +1676,9 @@ UserInputService.InputBegan:Connect(function(input, gpe)
 			elseif sPressed then
 				didDirectionalJump = LedgeHang.tryDirectionalJump(character, "back")
 				if didDirectionalJump then
-					state.stamina.current = math.max(0, state.stamina.current - (Config.LedgeHangJumpStaminaCost or 10))
+					if applyStam then
+						state.stamina.current = math.max(0, state.stamina.current - (Config.LedgeHangJumpStaminaCost or 10))
+					end
 					Style.addEvent(state.style, "LedgeJump", 1)
 					-- Update HUD values immediately
 					if state.styleScoreValue then
@@ -1659,7 +1692,9 @@ UserInputService.InputBegan:Connect(function(input, gpe)
 				-- No directional input, treat Space alone as W+Space (upward jump)
 				didDirectionalJump = LedgeHang.tryDirectionalJump(character, "up")
 				if didDirectionalJump then
-					state.stamina.current = math.max(0, state.stamina.current - (Config.LedgeHangJumpStaminaCost or 10))
+					if applyStam then
+						state.stamina.current = math.max(0, state.stamina.current - (Config.LedgeHangJumpStaminaCost or 10))
+					end
 					Style.addEvent(state.style, "LedgeJump", 1)
 					-- Update HUD values immediately
 					if state.styleScoreValue then
@@ -1696,21 +1731,25 @@ UserInputService.InputBegan:Connect(function(input, gpe)
 				end
 			end)
 		elseif Climb.isActive(character) then
-			if state.stamina.current >= Config.WallJumpStaminaCost then
+			if not applyStam or state.stamina.current >= Config.WallJumpStaminaCost then
 				if Climb.tryHop(character) then
-					state.stamina.current = math.max(0, state.stamina.current - Config.WallJumpStaminaCost)
+					if applyStam then
+						state.stamina.current = math.max(0, state.stamina.current - Config.WallJumpStaminaCost)
+					end
 				end
 			end
 		elseif VerticalClimb.isActive(character) then
 			-- Handle wall jump during vertical climb - same logic as wall slide/run
-			if state.stamina.current >= Config.WallJumpStaminaCost then
+			if not applyStam or state.stamina.current >= Config.WallJumpStaminaCost then
 				-- Stop vertical climb first to prevent conflicts
 				VerticalClimb.stop(character)
 
 				-- Execute wall jump using the same system as wall slide/run
 				-- Use resetMomentum=true to completely reset velocity before wall jump
 				if WallJump.tryJump(character, true) then
-					state.stamina.current = math.max(0, state.stamina.current - Config.WallJumpStaminaCost)
+					if applyStam then
+						state.stamina.current = math.max(0, state.stamina.current - Config.WallJumpStaminaCost)
+					end
 					FX.play("WallJump", character)
 					-- Suppress air control briefly to prevent immediate input from reducing away impulse
 					state._suppressAirControlUntil = os.clock() + (Config.WallJumpAirControlSuppressSeconds or 0.2)
@@ -1718,7 +1757,7 @@ UserInputService.InputBegan:Connect(function(input, gpe)
 			end
 		elseif WallRun.isActive(character) or (WallJump.isWallSliding and WallJump.isWallSliding(character)) then
 			-- Hop off the wall and stop sticking
-			if state.stamina.current >= Config.WallJumpStaminaCost then
+			if not applyStam or state.stamina.current >= Config.WallJumpStaminaCost then
 				local isWallSliding = WallJump.isWallSliding and WallJump.isWallSliding(character)
 				local isWallRunning = WallRun.isActive(character)
 
@@ -1726,13 +1765,17 @@ UserInputService.InputBegan:Connect(function(input, gpe)
 				if isWallSliding then
 					-- Use resetMomentum=true to ensure clean wall jump from wall slide
 					if WallJump.tryJump(character, true) then
-						state.stamina.current = math.max(0, state.stamina.current - Config.WallJumpStaminaCost)
+						if applyStam then
+							state.stamina.current = math.max(0, state.stamina.current - Config.WallJumpStaminaCost)
+						end
 						FX.play("WallJump", character)
 					end
 				elseif isWallRunning then
 					-- Only use WallRun.tryHop if not wall sliding
 					if WallRun.tryHop(character) then
-						state.stamina.current = math.max(0, state.stamina.current - Config.WallJumpStaminaCost)
+						if applyStam then
+							state.stamina.current = math.max(0, state.stamina.current - Config.WallJumpStaminaCost)
+						end
 						FX.play("WallJump", character)
 						-- Suppress air control briefly to prevent immediate input from reducing away impulse
 						state._suppressAirControlUntil = os.clock() + (Config.WallJumpAirControlSuppressSeconds or 0.2)
@@ -1750,21 +1793,23 @@ UserInputService.InputBegan:Connect(function(input, gpe)
 			local airborne = (humanoid.FloorMaterial == Enum.Material.Air)
 			if airborne then
 				-- Airborne: if near wall and can enter slide immediately, prefer starting slide first and block jump until pose snaps
-				if state.stamina.current >= Config.WallJumpStaminaCost then
+				if not applyStam or state.stamina.current >= Config.WallJumpStaminaCost then
 					if WallJump.isNearWall(character) then
 						-- isNearWall will start slide; rely on WallJump.tryJump to enforce animReady gating on next press
 						return
 					else
 						-- Use resetMomentum=true to ensure clean wall jump
 						if WallJump.tryJump(character, true) then
-							state.stamina.current = math.max(0, state.stamina.current - Config.WallJumpStaminaCost)
+							if applyStam then
+								state.stamina.current = math.max(0, state.stamina.current - Config.WallJumpStaminaCost)
+							end
 							return
 						end
 					end
 				end
 				-- Double Jump: if enabled and charges remain, consume one and apply impulse
 				if Config.DoubleJumpEnabled and (state.doubleJumpCharges or 0) > 0 then
-					if state.stamina.current >= (Config.DoubleJumpStaminaCost or 0) then
+					if not applyStam or state.stamina.current >= (Config.DoubleJumpStaminaCost or 0) then
 						-- Disallow double jump during zipline/climb/active wallrun/slide
 						if
 							not Zipline.isActive(character)
@@ -1797,8 +1842,10 @@ UserInputService.InputBegan:Connect(function(input, gpe)
 							FX.playDoubleJump(character)
 							-- Spend resources
 							state.doubleJumpCharges = math.max(0, (state.doubleJumpCharges or 0) - 1)
-							state.stamina.current =
-								math.max(0, state.stamina.current - (Config.DoubleJumpStaminaCost or 0))
+							if applyStam then
+								state.stamina.current =
+									math.max(0, state.stamina.current - (Config.DoubleJumpStaminaCost or 0))
+							end
 							-- Update style (treat as Jump event)
 							Style.addEvent(state.style, "DoubleJump", 1)
 							-- Signal double jump for audio
@@ -1899,6 +1946,8 @@ RunService.RenderStepped:Connect(function(dt)
 	if not humanoid or not root then
 		return
 	end
+
+	local applyStamCosts = shouldApplyStaminaCosts()
 
 	-- Maintain flying state if active (prevent other systems from interfering)
 	if Fly.isActive(character) then
@@ -2132,12 +2181,8 @@ RunService.RenderStepped:Connect(function(dt)
 	end
 	local stillSprinting
 	do
-		-- Check if bomb tag is active (infinite stamina)
-		local isBombTagActive = isBombTagModeActive()
-
-		-- Only tick stamina if bomb tag is not active
 		local _cur, s
-		if not isBombTagActive then
+		if applyStamCosts then
 			_cur, s = Stamina.tickWithGate(
 				state.stamina,
 				dt,
@@ -2148,9 +2193,8 @@ RunService.RenderStepped:Connect(function(dt)
 			state.stamina.isSprinting = s
 			stillSprinting = s
 		else
-			-- Infinite stamina: keep at max
 			state.stamina.current = Config.StaminaMax
-			state.stamina.isSprinting = state.stamina.isSprinting -- Keep sprint state
+			state.stamina.isSprinting = state.stamina.isSprinting
 			stillSprinting = state.stamina.isSprinting
 		end
 	end
@@ -2162,10 +2206,8 @@ RunService.RenderStepped:Connect(function(dt)
 
 	-- Audio managed by AudioManager.client.lua
 
-	-- Wall slide stamina drain (half sprint rate) while active (skip if bomb tag is active)
-	local isBombTagActive = isBombTagModeActive()
-
-	if not isBombTagActive and WallJump.isWallSliding and WallJump.isWallSliding(character) then
+	-- Wall slide stamina drain (half sprint rate) while active
+	if applyStamCosts and WallJump.isWallSliding and WallJump.isWallSliding(character) then
 		local drain = (Config.WallSlideDrainPerSecond or (Config.SprintDrainPerSecond * 0.5)) * dt
 		state.stamina.current = math.max(0, state.stamina.current - drain)
 		if state.stamina.current <= 0 then
@@ -2178,11 +2220,7 @@ RunService.RenderStepped:Connect(function(dt)
 
 	-- Publish client state for HUD
 	if state.staminaValue then
-		-- Check if bomb tag is active (infinite stamina)
-		local isBombTagActive = isBombTagModeActive()
-
-		-- For infinite stamina during bomb tag, set to max
-		if isBombTagActive then
+		if not applyStamCosts then
 			state.staminaValue.Value = Config.StaminaMax
 			state.stamina.current = Config.StaminaMax
 		else
@@ -2190,7 +2228,12 @@ RunService.RenderStepped:Connect(function(dt)
 		end
 	end
 	if state.speedValue then
-		state.speedValue.Value = speed
+		-- Ledge hang: root is teleported later this frame; velocity/ClientState speed confuse camera FOV/shake
+		if LedgeHang.isActive(character) then
+			state.speedValue.Value = 0
+		else
+			state.speedValue.Value = speed
+		end
 	end
 	if state.momentumValue then
 		state.momentumValue.Value = state.momentum.value or 0
@@ -2256,7 +2299,7 @@ RunService.RenderStepped:Connect(function(dt)
 			show = "Press E to Zipline"
 		else
 			local nearClimbable = (not Climb.isActive(character)) and Climb.isNearClimbable(character)
-			if nearClimbable and state.stamina.current >= Config.ClimbMinStamina then
+			if nearClimbable and (not applyStamCosts or state.stamina.current >= Config.ClimbMinStamina) then
 				show = "Press E to Climb"
 			end
 		end
@@ -2278,12 +2321,13 @@ RunService.RenderStepped:Connect(function(dt)
 		updateClimbAnimation(character, moveDirection)
 
 		local ok = Climb.maintain(character, move)
-		-- Drain stamina every frame while active (even without movement)
-		state.stamina.current = state.stamina.current - (Config.ClimbStaminaDrainPerSecond * dt)
-		if state.stamina.current <= 0 then
-			state.stamina.current = 0
-			Climb.stop(character)
-			cleanupClimbAnimation(character)
+		if applyStamCosts then
+			state.stamina.current = state.stamina.current - (Config.ClimbStaminaDrainPerSecond * dt)
+			if state.stamina.current <= 0 then
+				state.stamina.current = 0
+				Climb.stop(character)
+				cleanupClimbAnimation(character)
+			end
 		end
 		-- Disable sprint while climbing
 		if state.stamina.isSprinting then
@@ -2329,7 +2373,7 @@ RunService.RenderStepped:Connect(function(dt)
 		and state.sprintHeld
 		and state.stamina.isSprinting
 		and (humanoid.MoveDirection and humanoid.MoveDirection.Magnitude > 0)
-		and state.stamina.current > 0
+		and (not applyStamCosts or state.stamina.current > 0)
 		and humanoid.FloorMaterial == Enum.Material.Air
 		and not Climb.isActive(character)
 	)
@@ -2356,31 +2400,30 @@ RunService.RenderStepped:Connect(function(dt)
 
 	-- Maintain Ledge Hanging
 	if LedgeHang.isActive(character) then
-		-- Handle stamina drain
-		local drainRate = Config.LedgeHangStaminaDrainPerSecond or 5
-		state.stamina.current = math.max(0, state.stamina.current - drainRate * dt)
-
-		-- Auto-release if no stamina
-		if state.stamina.current <= 0 then
-			LedgeHang.stop(character, false) -- false = stamina depletion release
-			-- Set a temporary cooldown to prevent immediate re-hang due to stamina depletion
-			state._staminaDepletedHangCooldown = os.clock() + (Config.LedgeHangStaminaDepletionCooldown or 2.0)
+		if applyStamCosts then
+			local drainRate = Config.LedgeHangStaminaDrainPerSecond or 5
+			state.stamina.current = math.max(0, state.stamina.current - drainRate * dt)
+			if state.stamina.current <= 0 then
+				LedgeHang.stop(character, false)
+				state._staminaDepletedHangCooldown = os.clock() + (Config.LedgeHangStaminaDepletionCooldown or 2.0)
+			else
+				LedgeHang.maintain(character, humanoid.MoveDirection, dt)
+			end
 		else
-			-- Maintain hanging position with horizontal movement
-			LedgeHang.maintain(character, humanoid.MoveDirection)
+			LedgeHang.maintain(character, humanoid.MoveDirection, dt)
 		end
 	end
 
 	-- Auto-detect tagged ledges nearby and start hang when close
-	-- But only if we have sufficient stamina (prevent infinite loops when stamina is depleted)
-	local canAutoHang = state.stamina.current >= (Config.LedgeHangMinStamina or 10)
+	local canAutoHang = not applyStamCosts or state.stamina.current >= (Config.LedgeHangMinStamina or 10)
 	local hasStaminaCooldown = state._staminaDepletedHangCooldown and os.clock() < state._staminaDepletedHangCooldown
 
 	if Config.LedgeTagAutoEnabled and not LedgeHang.isActive(character) and canAutoHang and not hasStaminaCooldown then
 		local root = character:FindFirstChild("HumanoidRootPart")
 		if root then
-			local range = Config.LedgeTagAutoHangRange or 3.5
-			local vertRange = Config.LedgeTagAutoVerticalRange or 4.0
+			local range = Config.LedgeTagAutoHangRange or 3
+			local vertRange = Config.LedgeTagAutoVerticalRange or 5
+			local maxGrabDist = Config.LedgeTagAutoMaxSurfaceDistance or 5.5
 			local nearest, nearestDist, nearestTopY
 
 			-- Pre-check: avoid processing ledges that are likely on cooldown
@@ -2438,6 +2481,9 @@ RunService.RenderStepped:Connect(function(dt)
 					end
 				end
 			end
+			if nearest and nearestDist and nearestDist > maxGrabDist then
+				nearest = nil
+			end
 			if nearest then
 				local faceAttr = (typeof(nearest.GetAttribute) == "function") and nearest:GetAttribute("LedgeFace")
 					or nil
@@ -2468,7 +2514,28 @@ RunService.RenderStepped:Connect(function(dt)
 				end
 				if not fakeHit then
 					local toPlayer = (root.Position - nearest.Position)
-					local toPlayerDir = (toPlayer.Magnitude > 0) and toPlayer.Unit or nearest.CFrame.LookVector
+					local toPlayerDir
+					if toPlayer.Magnitude > 1e-3 then
+						local vertBias = math.abs(toPlayer.Y) / toPlayer.Magnitude
+						-- Below/above the ledge: direction to player is mostly vertical; vertical faces tie on dot — use XZ or look
+						if vertBias > 0.75 then
+							local horiz = Vector3.new(toPlayer.X, 0, toPlayer.Z)
+							if horiz.Magnitude > 0.2 then
+								toPlayerDir = horiz.Unit
+							else
+								toPlayerDir = Vector3.new(root.CFrame.LookVector.X, 0, root.CFrame.LookVector.Z)
+								if toPlayerDir.Magnitude > 1e-3 then
+									toPlayerDir = toPlayerDir.Unit
+								else
+									toPlayerDir = nearest.CFrame.LookVector
+								end
+							end
+						else
+							toPlayerDir = toPlayer.Unit
+						end
+					else
+						toPlayerDir = nearest.CFrame.LookVector
+					end
 					local right = nearest.CFrame.RightVector
 					local look = nearest.CFrame.LookVector
 					local candidates = {
@@ -2509,7 +2576,7 @@ RunService.RenderStepped:Connect(function(dt)
 				-- Check stamina before attempting tagged ledge hang
 				local ok = false
 				if
-					state.stamina.current >= (Config.LedgeHangMinStamina or 10)
+					(not applyStamCosts or state.stamina.current >= (Config.LedgeHangMinStamina or 10))
 					and not (state._staminaDepletedHangCooldown and os.clock() < state._staminaDepletedHangCooldown)
 				then
 					-- Stop conflicting animations before starting ledge hang
@@ -2566,7 +2633,7 @@ RunService.RenderStepped:Connect(function(dt)
 			blockByMantleCandidate = Abilities.isMantleCandidate(character) == true
 		end
 		-- Extra: while mantling or within a small window after, completely disable isNearWall to avoid edge flickers on curved surfaces
-		if not state.sprintHeld and state.stamina.current > 0 and canStartSlide and not blockByMantleCandidate then
+		if not state.sprintHeld and (not applyStamCosts or state.stamina.current > 0) and canStartSlide and not blockByMantleCandidate then
 			-- Proximity check will internally start/stop slide as needed
 			local wasSliding = WallJump.isWallSliding and WallJump.isWallSliding(character)
 			WallJump.isNearWall(character)
@@ -2579,7 +2646,7 @@ RunService.RenderStepped:Connect(function(dt)
 		end
 		-- If slide is active, maintain physics only if we have stamina; otherwise stop
 		if WallJump.isWallSliding and WallJump.isWallSliding(character) then
-			if state.stamina.current > 0 then
+			if not applyStamCosts or state.stamina.current > 0 then
 				WallJump.updateWallSlide(character, dt)
 			else
 				WallJump.stopSlide(character)
@@ -2707,16 +2774,19 @@ RunService.RenderStepped:Connect(function(dt)
 			end
 		end
 		local movingAny = movingForward or movingByVelocity
+		local suppressMantleAfterClimb = Climb.getTimeSinceLastClimbStop(character)
+			< (Config.MantleSuppressAfterClimbSeconds or 0.55)
 		-- Do not mantle during incompatible states
 		if
 			airborne
 			and movingAny
+			and not suppressMantleAfterClimb
 			and (not Zipline.isActive(character))
 			and (not Climb.isActive(character))
 			and (not LedgeHang.isActive(character))
 			and (not WallRun.isActive(character))
 		then
-			if state.stamina.current >= (Config.MantleStaminaCost or 0) then
+			if not applyStamCosts or state.stamina.current >= (Config.MantleStaminaCost or 0) then
 				local didMantle = false
 				local didHang = false
 
@@ -2764,7 +2834,7 @@ RunService.RenderStepped:Connect(function(dt)
 							local minStaminaForHang = Config.LedgeHangMinStamina or 10
 							local hasStaminaDepletionCooldown = state._staminaDepletedHangCooldown
 								and os.clock() < state._staminaDepletedHangCooldown
-							local hasEnoughStamina = state.stamina.current >= minStaminaForHang
+							local hasEnoughStamina = not applyStamCosts or state.stamina.current >= minStaminaForHang
 
 							if
 								not didMantle
@@ -2791,7 +2861,9 @@ RunService.RenderStepped:Connect(function(dt)
 
 				if didMantle then
 					state._lastMantleTime = os.clock()
-					state.stamina.current = math.max(0, state.stamina.current - (Config.MantleStaminaCost or 0))
+					if applyStamCosts then
+						state.stamina.current = math.max(0, state.stamina.current - (Config.MantleStaminaCost or 0))
+					end
 					Style.addEvent(state.style, "Mantle", 1)
 					-- Suppress wall slide immediately and for an extra window; clear after grounded confirm
 					state.wallSlideSuppressed = true
@@ -2808,9 +2880,10 @@ RunService.RenderStepped:Connect(function(dt)
 						state.isMantlingValue.Value = true
 					end
 				elseif didHang then
-					-- Minimal stamina cost for hanging
-					local hangCost = Config.LedgeHangStaminaCost or 5
-					state.stamina.current = math.max(0, state.stamina.current - hangCost)
+					if applyStamCosts then
+						local hangCost = Config.LedgeHangStaminaCost or 5
+						state.stamina.current = math.max(0, state.stamina.current - hangCost)
+					end
 					-- Stop conflicting movements
 					if WallJump.isWallSliding and WallJump.isWallSliding(character) then
 						WallJump.stopSlide(character)

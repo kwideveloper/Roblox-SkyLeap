@@ -4,9 +4,30 @@
 
 local Players = game:GetService("Players")
 local CollectionService = game:GetService("CollectionService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local SharedUtils = require(ReplicatedStorage:WaitForChild("SharedUtils"))
 
 -- Store checkpoint position for each player
 local playerCheckpoints = {}
+
+-- Touched (and related) connections per checkpoint root — disconnect on destroy or when tag is removed
+local checkpointWiring = {} -- [Instance] = { RBXScriptConnection, ... }
+
+local function disconnectCheckpointWiring(rootInstance)
+	local list = checkpointWiring[rootInstance]
+	if list then
+		for _, conn in ipairs(list) do
+			if conn and conn.Connected then
+				conn:Disconnect()
+			end
+		end
+		checkpointWiring[rootInstance] = nil
+	end
+	if rootInstance and rootInstance.Parent then
+		rootInstance:SetAttribute("_CheckpointWired", nil)
+	end
+end
 
 -- Get the checkpoint position from a checkpoint object (part or model)
 local function getCheckpointPosition(checkpointObject)
@@ -82,47 +103,26 @@ local function setupCheckpointPart(part)
 	end
 	
 	part:SetAttribute("_CheckpointWired", true)
-	
-	-- Connect touch event
-	local connection
-	connection = part.Touched:Connect(function(hit)
-		if not hit then
-			return
-		end
-		
-		-- Find the character that touched this part
-		local character = hit.Parent
-		if not character then
-			return
-		end
-		
-		-- Check if it's a player character
-		local humanoid = character:FindFirstChildOfClass("Humanoid")
-		if not humanoid then
-			return
-		end
-		
-		-- Find the player
-		local player = Players:GetPlayerFromCharacter(character)
+
+	local list = {}
+	checkpointWiring[part] = list
+
+	list[#list + 1] = part.Touched:Connect(function(hit)
+		local player = SharedUtils.getPlayerFromTouch(hit)
 		if not player then
 			return
 		end
-		
-		-- Verify the checkpoint still has the tag
+
 		local checkpointObject = findCheckpointFromPart(part)
 		if not checkpointObject then
 			return
 		end
-		
-		-- Handle the checkpoint touch
+
 		handleCheckpointTouch(player, part)
 	end)
-	
-	-- Cleanup connection when part is destroyed
-	part.Destroying:Connect(function()
-		if connection then
-			connection:Disconnect()
-		end
+
+	list[#list + 1] = part.Destroying:Connect(function()
+		disconnectCheckpointWiring(part)
 	end)
 end
 
@@ -138,76 +138,43 @@ local function setupCheckpointModel(model)
 	end
 	
 	model:SetAttribute("_CheckpointWired", true)
-	
-	-- Connect touch events to all BaseParts in the model
-	local connections = {}
-	
+
+	local list = {}
+	checkpointWiring[model] = list
+
 	local function connectPart(part)
 		if not part:IsA("BasePart") then
 			return
 		end
-		
-		local connection
-		connection = part.Touched:Connect(function(hit)
-			if not hit then
-				return
-			end
-			
-			-- Find the character that touched this part
-			local character = hit.Parent
-			if not character then
-				return
-			end
-			
-			-- Check if it's a player character
-			local humanoid = character:FindFirstChildOfClass("Humanoid")
-			if not humanoid then
-				return
-			end
-			
-			-- Find the player
-			local player = Players:GetPlayerFromCharacter(character)
+
+		list[#list + 1] = part.Touched:Connect(function(hit)
+			local player = SharedUtils.getPlayerFromTouch(hit)
 			if not player then
 				return
 			end
-			
-			-- Verify the model still has the tag
+
 			if not CollectionService:HasTag(model, "Checkpoint") then
 				return
 			end
-			
-			-- Handle the checkpoint touch
+
 			handleCheckpointTouch(player, part)
 		end)
-		
-		table.insert(connections, connection)
 	end
-	
-	-- Connect existing parts
+
 	for _, descendant in ipairs(model:GetDescendants()) do
 		if descendant:IsA("BasePart") then
 			connectPart(descendant)
 		end
 	end
-	
-	-- Connect new parts added to the model
-	local descendantAddedConnection
-	descendantAddedConnection = model.DescendantAdded:Connect(function(descendant)
+
+	list[#list + 1] = model.DescendantAdded:Connect(function(descendant)
 		if descendant:IsA("BasePart") then
 			connectPart(descendant)
 		end
 	end)
-	
-	-- Cleanup when model is destroyed
-	model.Destroying:Connect(function()
-		for _, conn in ipairs(connections) do
-			if conn then
-				conn:Disconnect()
-			end
-		end
-		if descendantAddedConnection then
-			descendantAddedConnection:Disconnect()
-		end
+
+	list[#list + 1] = model.Destroying:Connect(function()
+		disconnectCheckpointWiring(model)
 	end)
 end
 
@@ -269,9 +236,8 @@ CollectionService:GetInstanceAddedSignal("Checkpoint"):Connect(function(obj)
 end)
 
 CollectionService:GetInstanceRemovedSignal("Checkpoint"):Connect(function(obj)
-	-- Clean up wiring attribute when tag is removed
 	if obj:IsA("BasePart") or obj:IsA("Model") then
-		obj:SetAttribute("_CheckpointWired", nil)
+		disconnectCheckpointWiring(obj)
 	end
 end)
 
@@ -302,7 +268,6 @@ Players.PlayerAdded:Connect(function(player)
 end)
 
 -- Handle R key press for respawn (via RemoteEvent)
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local remoteFolder = ReplicatedStorage:FindFirstChild("Remotes")
 if not remoteFolder then
 	remoteFolder = Instance.new("Folder")

@@ -3,10 +3,24 @@
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ServerScriptService = game:GetService("ServerScriptService")
-local PlayerProfile = require(ServerScriptService:WaitForChild("PlayerProfile"))
 
-local remotes = ReplicatedStorage:WaitForChild("Remotes")
-local styleCommit = remotes:WaitForChild("StyleCommit")
+local playerProfileModule = ServerScriptService:FindFirstChild("PlayerProfile")
+if not playerProfileModule then
+	warn("[Leaderboard] PlayerProfile module not found in ServerScriptService")
+	return
+end
+local PlayerProfile = require(playerProfileModule)
+
+local remotes = ReplicatedStorage:WaitForChild("Remotes", 30)
+if not remotes then
+	warn("[Leaderboard] Remotes folder not found (timeout)")
+	return
+end
+local styleCommit = remotes:WaitForChild("StyleCommit", 15)
+if not styleCommit then
+	warn("[Leaderboard] StyleCommit remote not found (timeout)")
+	return
+end
 -- Currency is handled in Currency.server.lua
 
 -- FIXED: Create Leaderboard folder that LeaderboardUI.client.lua expects

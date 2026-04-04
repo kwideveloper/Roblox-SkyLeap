@@ -23,6 +23,10 @@ Config.StaminaMax = 300 -- 200
 Config.SprintDrainPerSecond = 20 -- 20
 Config.StaminaRegenPerSecond = 80 -- 40
 Config.SprintStartThreshold = 20 -- minimum stamina required to start sprinting
+-- When false: no stamina costs, no stamina bar/costs in HUD; sprint is not limited by stamina.
+-- Set true for modes that use stamina (BombTag infinite stamina still overrides when active).
+-- Full guide: docs/CustomAttributesAndTags.md → section "Stamina system (global on/off)".
+Config.StaminaEnabled = false
 
 -- Momentum system - OPTIMIZED FOR VELOCITY MAINTENANCE
 Config.MomentumIncreaseFactor = 0.12 -- INCREASED: Faster momentum buildup for bunny hop chains
@@ -195,7 +199,11 @@ Config.ClimbStickVelocity = 8 -- how strongly to stick to the wall
 Config.ClimbMinStamina = 10 -- minimum stamina required to start climbing
 Config.ClimbStaminaDrainPerSecond = 15 -- stamina drain rate while climbing
 Config.ClimbMaxStamina = 100 -- maximum stamina for climbing
-Config.DebugClimb = false -- enable debug prints for climb system
+Config.DebugClimb = false -- verbose climb logs (ground checks, velocity, mantle gate)
+-- Compact [Climb:trace] while climbing. Also on in Roblox Studio when ClimbTraceInStudio is true (default).
+Config.ClimbTraceEnabled = false
+Config.ClimbTraceInStudio = true
+Config.ClimbTraceIntervalSeconds = 0.12
 Config.ClimbForceGroundDetection = true -- force ground detection even when not moving (for testing auto-disable)
 Config.ClimbGroundDetectionRaycastDistance = 5.0 -- distance to cast ray downward for ground detection
 Config.ClimbFeetOffsetMultiplier = 0.5 -- multiplier for calculating feet position from character center (0.5 = half height)
@@ -214,6 +222,19 @@ Config.ClimbLedgeEdgeMovementLimit = 0.3 -- limit upward movement when near ledg
 Config.ClimbLedgeEdgeRestrictiveDistance = 0.2 -- very restrictive distance to avoid interfering with normal mantle detection
 Config.ClimbLedgeEdgeMovementLimitEnabled = true -- enable limiting upward movement when near ledge edge
 Config.ClimbLedgeEdgeMovementLimitThreshold = 0.15 -- distance threshold to start limiting movement (very restrictive)
+-- Mantle handoff while climbing: detectLedgeForMantle can false-positive mid-wall (overlap fan, trims, CanQuery gaps).
+-- Only allow climb->mantle / ledge-edge logic when HumanoidRootPart is near the *actual top* of the part being climbed.
+Config.ClimbMantleRequireNearClimbedWallTop = true
+Config.ClimbMantleMinClearanceBelowWallTop = -2 -- root may be this many studs above the wall top face and still count as "at top"
+-- Wider window only for "near top" gating (ledge checks). Keep only slightly above lip max.
+Config.ClimbMantleMaxClearanceBelowWallTop = 3.25
+-- When generic mantle detection fails on Climbable-only walls (no Mantle=true), still run mantle at the lip using climb context.
+Config.ClimbAutoMantleAtWallTop = true
+-- wallTopY - rootY: only trigger climb-finish mantle inside this tight band (studs below top face)
+Config.ClimbFinishMantleClearanceMin = -0.5
+Config.ClimbFinishMantleClearanceMax = 1.35
+-- If using ray ledge detect, ledge topY must match climbed part top within this (studs)
+Config.ClimbFinishMantleTopYTolerance = 1.25
 
 Config.ClimbGroundProximityCheck = true -- enable checking if player is too close to ground during climb
 Config.ClimbMinGroundDistance = 2.0 -- minimum distance from ground to allow climbing
@@ -436,7 +457,9 @@ Config.LedgeHangMaxHeight = 4.0 -- max height above waist for hang
 Config.LedgeHangMinClearance = 5.0 -- min clearance above ledge required to mantle instead of hang (character height + headroom)
 Config.LedgeHangDistance = 1.4 -- horizontal distance from wall while hanging
 Config.LedgeHangDropDistance = 1.5 -- how far below ledge to hang
-Config.LedgeHangMoveSpeed = 20 -- horizontal movement speed while hanging
+Config.LedgeHangMoveSpeed = 15 -- horizontal movement speed while hanging (studs/s)
+-- Ignore tiny A/D input so MoveDirection flicker does not swap loop/move animations every frame
+Config.LedgeHangMoveInputDeadzone = 0.12
 Config.LedgeHangStaminaCost = 5 -- initial stamina cost to start hanging
 Config.LedgeHangStaminaDrainPerSecond = 5 -- stamina cost per second while hanging
 Config.LedgeHangMinStamina = 10 -- Minimum stamina required to start a ledge hang
@@ -473,8 +496,12 @@ Config.VaultUseGroundHeight = true -- if true, measure obstacle height from grou
 -- Tagged Ledge Auto-Hang
 Config.LedgeTagAutoEnabled = true -- auto-detect tagged ledges nearby
 Config.LedgeTagName = "Ledge" -- CollectionService tag name
-Config.LedgeTagAutoHangRange = 7 -- horizontal half-extent (X/Z) for auto-start near tagged ledge
-Config.LedgeTagAutoVerticalRange = 7 -- vertical half-extent around the ledge top to allow auto-hang
+-- How far from the ledge part's bounding box the player can be and still be considered (coarse filter)
+Config.LedgeTagAutoHangRange = 3 -- studs: horizontal half-extent (X/Z) expanded around the part
+-- Vertical half-extent above/below the part (tighter than before for less “magnetic” vertical grab)
+Config.LedgeTagAutoVerticalRange = 5 -- studs
+-- Max 3D distance HRP → part AABB (slightly below old 6.5 so vertical approaches are a bit stricter)
+Config.LedgeTagAutoMaxSurfaceDistance = 5.5
 Config.LedgeTagFaceLateralMargin = 0.75 -- lateral slack on the orthogonal axis when selecting outward face
 
 -- Ledge-to-Ledge chaining (jump up to catch the next ledge above)
@@ -482,6 +509,12 @@ Config.LedgeHangChainEnabled = true
 Config.LedgeHangChainMaxUpSearch = 6.0 -- how far above current ledge to search (studs)
 Config.LedgeHangChainMaxHorizontal = 1.5 -- allowed horizontal offset from current wall alignment
 Config.LedgeHangChainNormalDotMin = 0.8 -- require new ledge surface normal to match current wall direction
+-- Up-ray often hits the bottom of the upper part (normal ~ vertical); use hang surface normal instead
+Config.LedgeHangChainUndersideNormalThreshold = 0.85 -- if abs(hit.Normal.Y) >= this, treat as shelf underside
+-- After W+Space ledge jump, short global gate (upper ledge can still be a different Instance)
+Config.LedgeHangUpJumpGlobalCooldown = 0.14
+-- After any directional jump off a hang, block re-attaching to that same ledge part (auto-hang spam)
+Config.LedgeHangSameLedgeRehangCooldownAfterJump = 0.5
 Config.VaultApproachSpeedMin = 6
 Config.VaultFacingDotMin = 0.35
 Config.VaultApproachDotMin = 0.35
@@ -500,6 +533,8 @@ Config.MantleDurationSeconds = 0.35 -- 0.22 -- baseline; may be overridden by pr
 Config.MantlePreserveSpeed = true
 Config.MantleMinHorizontalSpeed = 24 -- studs/s floor while mantling
 Config.MantleCooldownSeconds = 0.35
+-- Blocks ParkourController auto-mantle right after climb ends (avoids race with climb-finish + false ledge mid-wall)
+Config.MantleSuppressAfterClimbSeconds = 0.55
 Config.MantleStaminaCost = 10
 -- Mantle approach gating: require facing and velocity towards wall
 Config.MantleApproachSpeedMin = 6 -- min horizontal speed towards wall to allow mantle
@@ -636,5 +671,18 @@ Config.DashAllowedDuringZipline = false -- prevent dash execution while ziplinin
 Config.DashAllowedDuringVault = false -- prevent dash execution while vaulting
 Config.DashAllowedDuringMantle = false -- prevent dash execution while mantling
 Config.DebugDash = false -- enable debug prints for dash system
+
+-- Parkour surfaces: true = opt-in (default OFF). Use EnableAll = true on a model/part or set each mechanic = true.
+--   LedgeHang is special: auto hang at edges without standing room still works without tags (block with LedgeHang = false).
+-- false = legacy: parkour allowed unless a mechanic is explicitly false on the surface chain.
+Config.ParkourOptInSurfaces = true
+
+-- One-shot FX / fly debug (ParkourController.client)
+Config.DebugFX = false
+Config.DebugFly = false
+
+-- Player profile persistence pacing (ServerScriptService.PlayerProfile)
+Config.PlayerProfileSaveIntervalSeconds = 30
+Config.PlayerProfileCriticalSaveThreshold = 5000
 
 return Config

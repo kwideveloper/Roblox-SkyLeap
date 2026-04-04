@@ -6,7 +6,12 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ServerScriptService = game:GetService("ServerScriptService")
 
 -- Import required modules
-local PlayerProfile = require(ServerScriptService:WaitForChild("PlayerProfile"))
+local playerProfileModule = ServerScriptService:FindFirstChild("PlayerProfile")
+if not playerProfileModule then
+	warn("[TrailSystem] PlayerProfile module not found in ServerScriptService")
+	return
+end
+local PlayerProfile = require(playerProfileModule)
 local TrailConfig =
 	require(ReplicatedStorage:WaitForChild("Cosmetics"):WaitForChild("TrailSystem"):WaitForChild("TrailConfig"))
 local TrailVisuals =

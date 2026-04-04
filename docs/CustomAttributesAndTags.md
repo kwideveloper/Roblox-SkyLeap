@@ -2,6 +2,8 @@
 
 This document lists all Attributes and CollectionService Tags used in SkyLeap to customize movement, UI behavior, and game mechanics.
 
+For the **global stamina toggle** (`Config.StaminaEnabled`: costs, HUD, when to use it, runtime modes), see **Stamina system (global on/off)** (section after §1 Wall & Surface).
+
 ## Animation Events Reference
 
 **Recommended Animation Events:**
@@ -18,28 +20,32 @@ This document lists all Attributes and CollectionService Tags used in SkyLeap to
 
 ## 1. Wall & Surface Attributes
 
-**Walls (BasePart/Model):**
-- `WallJump` (bool)  
-  *If false, disallows Wall Jump/Wall Slide on this surface.*
+**Parkour mode** is controlled by **`Config.ParkourOptInSurfaces`** in `Movement/Config.lua`:
 
-- `WallRun` (bool)  
-  *If true on a climbable surface, allows Wall Run anyway (overrides climbable block for wallrun only).*
+- **`true` (SkyLeap default):** **opt-in** — surfaces do **not** allow wall jump, wall run, mantle, etc. until you enable them (see `EnableAll` or per-mechanic attributes below).
+- **`false` (legacy):** parkour is **on by default** on surfaces; set a mechanic to **`false`** to disable it (e.g. `Mantle = false`).
 
-- `WallRunSpeedMultiplier` (number)  
-  *Multiplies the player's current horizontal speed once when starting wallrun to set target wallrun speed.*
+Attributes are read on the **hit part** and its **ancestors up to `Workspace` only** (nothing above Workspace), so accidental attributes on `game` / services do not affect parkour.
 
-- `WallJumpUpMultiplier` (number)  
-  *Multiplies Config.WallJumpImpulseUp on this wall.*
+- `EnableAll` (bool)  
+  *If **true**, enables **every** parkour mechanic on this surface (within the Workspace hierarchy). You can still set a specific mechanic to **`false`** on the same chain to turn that one off (e.g. `EnableAll` + `WallRun` = false).*
 
-- `WallJumpAwayMultiplier` (number)  
-  *Multiplies Config.WallJumpImpulseAway on this wall.*
+**Per-mechanic opt-in** (when `ParkourOptInSurfaces` is `true`; set to **true** on the part or a parent model unless you used `EnableAll`; inherited, nearest wins):
 
-- `Climbable` (bool) / `climbable` (bool)  
-  *If true, allows Climb module to attach. WallRun defaults to disallow on climbable unless WallRun==true.*
+- `WallJump` — wall jump and wall slide on this surface.
+- `WallRun` — wall run.
+- `VerticalClimb` — sprint vertical climb along the wall.
+- `Mantle` — mantle / ledge grab on this surface.
+- `LedgeHang` — optional **opt-out** only: set **`false`** to forbid hanging on that surface. You do **not** need `LedgeHang = true` for the **automatic** hang when there is not enough space above to mantle (geometry-based). The **`Ledge`** CollectionService tag is still used for **proximity auto-grab** on authored ledges (`Config.LedgeTagName`).
+- `Climb` — allows the Climb module **in addition to** the `Climbable` CollectionService tag (both are required for climbing).
 
-**Ledge Surfaces (Parts/Models):**
-- `Mantle` (bool)  
-  *If false, mantle is disabled on this surface (even if geometry fits).*
+**Multipliers (optional, on the hit part or ancestors):**
+
+- `WallRunSpeedMultiplier` (number) — scales wall run target speed when starting.
+- `WallJumpUpMultiplier` (number) — scales `Config.WallJumpImpulseUp` on this wall.
+- `WallJumpAwayMultiplier` (number) — scales `Config.WallJumpImpulseAway` on this wall.
+
+**Climbing:** Tag the part with **`Climbable`** (CollectionService). That tag alone enables climbing on that surface (walls included). Optional: set attribute **`Climb = false`** on the part or a parent (within Workspace) to disable climb on a tagged surface.
 
 **Obstacles in Front of the Player:**
 - `Vault` (bool)  
@@ -47,11 +53,65 @@ This document lists all Attributes and CollectionService Tags used in SkyLeap to
 
 ---
 
+## Stamina system (global on/off)
+
+Parkour **stamina** (drain on sprint, dash, slide, wall jump, climb, mantle, ledge hang, etc.) is controlled by a **single config flag**, not by a part attribute.
+
+| Setting | Location |
+|--------|----------|
+| `Config.StaminaEnabled` | `ReplicatedStorage` → `Movement` → `Config` module (`Config.lua` in source) |
+
+### Values
+
+- **`false` (default in SkyLeap)** — “Arcade” mode  
+  - No stamina **costs** (actions are not blocked or drained by stamina).  
+  - The **stamina bar and cost text** in the HUD (`StarterPlayerScripts/HUD.client.lua`) are **hidden**.  
+  - **Sprint** is not limited by the stamina threshold (same idea as infinite stamina for movement).  
+  - **Server** ledge-hang stamina checks (`LedgeHangSync`) and **client** gates skip stamina logic.  
+  - Use this when you want **always-on parkour** without tuning costs.
+
+- **`true`** — “Resource” mode  
+  - All configured costs and minimums apply (`DashStaminaCost`, `ClimbMinStamina`, `LedgeHangMinStamina`, sprint drain/regen, etc.).  
+  - HUD shows the stamina bar (and related UI).  
+  - Use for **modes that need tension or balance**: survival, competitive routes, slower pacing, or explicit stamina management.
+
+### When to use which
+
+| Goal | Use `StaminaEnabled` |
+|------|----------------------|
+| Main experience / speedrun feel / minimal friction | `false` |
+| Stamina as a gameplay resource | `true` |
+| Bomb-style round where bomb holder already gets infinite stamina | Either; with `false`, everyone has no costs. With `true`, BombTag logic still **skips** stamina costs while bomb rules are active (same module treats that like infinite stamina for costs). |
+
+### Enabling or disabling at runtime (modes, rounds)
+
+`Config` is a **shared table** returned by `require`. Any script (server or client) can flip the flag when a mode starts or ends:
+
+```lua
+local Config = require(game:GetService("ReplicatedStorage").Movement.Config)
+
+-- Start a stamina-based mode
+Config.StaminaEnabled = true
+
+-- End mode / return to default arcade feel
+Config.StaminaEnabled = false
+```
+
+Set it **once per mode change** (e.g. when teleporting players to an arena, or from a central match controller). Clients that already required `Config` see the same table, so the value updates for code that reads `Config.StaminaEnabled` each frame (e.g. `ParkourController`).
+
+**Note:** Changing the flag mid-session does not by itself recreate UI; the HUD reads the flag every frame and shows or hides the bar accordingly.
+
+### Relation to the `Stamina` **tag** on parts
+
+The **`Stamina`** CollectionService tag on floor/volumes (see **§2. Floor & Volume**) means: “allow stamina **regeneration** while touching this volume (even in air).” That only **matters when `StaminaEnabled == true`**. When stamina is disabled, the controller keeps stamina at max for movement logic anyway, so regen pads are unnecessary but harmless.
+
+---
+
 ## 2. Floor & Volume Attributes
 
 **Parts (floor/volumes):**
 - `Stamina` (Tag) **UPDATED: Now uses CollectionService tag instead of attribute**
-  *If tagged, standing/touching this part enables stamina regeneration even if airborne.*
+  *If tagged, standing/touching this part enables stamina regeneration even if airborne. Only relevant when `Config.StaminaEnabled` is `true` (see **Stamina system (global on/off)** above).*
 
 ---
 
@@ -622,6 +682,7 @@ animatedModel:SetAttribute("Loop", false) -- Only rotate once (no return)
 - If PrimaryPart is not set, the first BasePart found will be used
 - Animation starts immediately unless Delay is set
 - Loop works by playing forward animation, then backward animation, then repeating
+- **Welded decorations (spikes, meshes, etc.):** Use `WeldConstraint` (or other rigid welds) so extra parts are **connected to the same rigid assembly** as the animated `Start` root (`GetConnectedParts`). The server moves the whole assembly each frame so spikes move with the platform. Weld to the `BasePart` that is actually animated (typically `Start` or the `Start` model’s `PrimaryPart`). Parts that are only parented but not rigidly connected to that root are not moved.
 
 ---
 

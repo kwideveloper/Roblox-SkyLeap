@@ -5,8 +5,17 @@ local ServerScriptService = game:GetService("ServerScriptService")
 
 local BOMB_TAG_ATTRIBUTE = "BombTagActive"
 
-local PlayerProfile = require(ServerScriptService:WaitForChild("PlayerProfile"))
-local Leaderboards = require(ServerScriptService:WaitForChild("Leaderboards"))
+local playerProfileModule = ServerScriptService:FindFirstChild("PlayerProfile")
+local PlayerProfile = playerProfileModule and require(playerProfileModule)
+if not PlayerProfile then
+	warn("[BombLevelFFAController] PlayerProfile module not found in ServerScriptService")
+end
+
+local leaderboardsModule = ServerScriptService:FindFirstChild("Leaderboards")
+local Leaderboards = leaderboardsModule and require(leaderboardsModule)
+if not Leaderboards then
+	warn("[BombLevelFFAController] Leaderboards module not found in ServerScriptService")
+end
 
 local BombLevelFFAController = {}
 BombLevelFFAController.__index = BombLevelFFAController
@@ -786,9 +795,13 @@ function BombLevelFFAController:_registerKill(player: Player)
 	end
 
 	data.kills = (data.kills or 0) + 1
-	PlayerProfile.updateMatchStats(player.UserId, { kills = 1 })
-	Leaderboards.RecordDailyKill(player.UserId, 1)
-	Leaderboards.RecordKillAllTime(player.UserId, 1)
+	if PlayerProfile then
+		PlayerProfile.updateMatchStats(player.UserId, { kills = 1 })
+	end
+	if Leaderboards then
+		Leaderboards.RecordDailyKill(player.UserId, 1)
+		Leaderboards.RecordKillAllTime(player.UserId, 1)
+	end
 
 	self:_broadcast(self._remotes.ScoreboardUpdate, {
 		mode = "FFA",

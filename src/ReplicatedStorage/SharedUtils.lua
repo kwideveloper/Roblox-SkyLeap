@@ -5,6 +5,7 @@ local SharedUtils = {}
 
 -- Commonly used services
 local CollectionService = game:GetService("CollectionService")
+local Players = game:GetService("Players")
 
 -- Cached tags to reduce repeated CollectionService calls
 local tagCache = {}
@@ -66,6 +67,24 @@ function SharedUtils.getFirstValidTag(part, validTags)
 				return tag
 			end
 		end
+	end
+	return nil
+end
+
+-- Resolve the Player from a .Touched hit (handles accessories / nested instances)
+function SharedUtils.getPlayerFromTouch(hit)
+	if not hit then
+		return nil
+	end
+	local inst = hit
+	while inst do
+		if inst:IsA("Model") then
+			local humanoid = inst:FindFirstChildOfClass("Humanoid")
+			if humanoid then
+				return Players:GetPlayerFromCharacter(inst)
+			end
+		end
+		inst = inst.Parent
 	end
 	return nil
 end

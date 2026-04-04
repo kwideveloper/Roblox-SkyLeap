@@ -63,31 +63,37 @@ RunService.RenderStepped:Connect(function(dt)
 		isLedgeHanging = hangFlag and hangFlag.Value == true
 	end)
 
-	local camCF = camera.CFrame
-	-- Camera direction in neck.Part0 local space
-	local lookLocal
-	if neck.Part0 then
-		-- Use the direction AWAY from the camera so the head looks where the camera is looking, not at the camera
-		lookLocal = neck.Part0.CFrame:VectorToObjectSpace(-camCF.LookVector)
+	if isLedgeHanging then
+		-- Sliding on a ledge moves/animates the torso; camera-relative head IK reads as camera shake — hold neutral
+		local settle = 1 - math.exp(-(14 * (dt or 0)))
+		neck.C0 = neck.C0:Lerp(baseC0, settle)
 	else
-		-- fallback to root frame if Part0 missing
-		lookLocal = root.CFrame:VectorToObjectSpace(-camCF.LookVector)
+		local camCF = camera.CFrame
+		-- Camera direction in neck.Part0 local space
+		local lookLocal
+		if neck.Part0 then
+			-- Use the direction AWAY from the camera so the head looks where the camera is looking, not at the camera
+			lookLocal = neck.Part0.CFrame:VectorToObjectSpace(-camCF.LookVector)
+		else
+			-- fallback to root frame if Part0 missing
+			lookLocal = root.CFrame:VectorToObjectSpace(-camCF.LookVector)
+		end
+
+		-- Compute yaw (left/right) and pitch (up/down) like reference snippet
+		-- Use asin on local X/Y so signs match typical Roblox rigs
+		local yaw = math.asin(math.clamp(lookLocal.X, -1, 1))
+		local pitch = -math.asin(math.clamp(lookLocal.Y, -1, 1))
+
+		-- Clamp
+		yaw = math.clamp(yaw, -maxYaw, maxYaw)
+		pitch = math.clamp(pitch, -maxPitch, maxPitch)
+
+		-- Smooth blend (delta-time based), apply yaw then pitch (order matters)
+		local headSpeed = 8 -- higher = snappier, lower = smoother
+		local headAlpha = 1 - math.exp(-(headSpeed * (dt or 0)))
+		local target = baseC0 * CFrame.Angles(0, yaw, 0) * CFrame.Angles(pitch, 0, 0)
+		neck.C0 = neck.C0:Lerp(target, headAlpha)
 	end
-
-	-- Compute yaw (left/right) and pitch (up/down) like reference snippet
-	-- Use asin on local X/Y so signs match typical Roblox rigs
-	local yaw = math.asin(math.clamp(lookLocal.X, -1, 1))
-	local pitch = -math.asin(math.clamp(lookLocal.Y, -1, 1))
-
-	-- Clamp
-	yaw = math.clamp(yaw, -maxYaw, maxYaw)
-	pitch = math.clamp(pitch, -maxPitch, maxPitch)
-
-	-- Smooth blend (delta-time based), apply yaw then pitch (order matters)
-	local headSpeed = 8 -- higher = snappier, lower = smoother
-	local headAlpha = 1 - math.exp(-(headSpeed * (dt or 0)))
-	local target = baseC0 * CFrame.Angles(0, yaw, 0) * CFrame.Angles(pitch, 0, 0)
-	neck.C0 = neck.C0:Lerp(target, headAlpha)
 
 	-- Torso/waist rotation when looking far to the sides/back
 	-- Skip torso rotation if ledge hanging, but allow head tracking

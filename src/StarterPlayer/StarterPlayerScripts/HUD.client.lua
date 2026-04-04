@@ -160,36 +160,54 @@ local function update()
 	if not screenGui or not container or not barBg or not speedText or not barLabel then
 		return
 	end
-	if not barFill then
-		-- Wait for UI to include fill; skip until it exists
-		barFill = barBg:FindFirstChild("StaminaFill")
+	local C = require(ReplicatedStorage.Movement.Config)
+	local staminaSystemOn = C.StaminaEnabled == true
+	barBg.Visible = staminaSystemOn
+	barLabel.Visible = staminaSystemOn
+	if costsText then
+		costsText.Visible = staminaSystemOn
+	end
+	if staminaSystemOn then
 		if not barFill then
-			return
+			barFill = barBg:FindFirstChild("StaminaFill")
+			if not barFill then
+				return
+			end
+		end
+	else
+		if not barFill then
+			barFill = barBg:FindFirstChild("StaminaFill")
 		end
 	end
+
 	local folder, staminaValue, speedValue, isSprinting, isSliding, isAirborne, isWallRunning, isWallSliding, isVaulting, isMantling, isClimbing, isZiplining, bhStacks, bhFlash =
 		getClientState()
 	if not folder then
 		return
 	end
 	local staminaCurrent = staminaValue and staminaValue.Value or 0
-	local C = require(ReplicatedStorage.Movement.Config)
+	if not staminaSystemOn then
+		staminaCurrent = C.StaminaMax
+	end
 	local staminaMax = C.StaminaMax
 	local ratio = 0
 	if staminaMax > 0 then
 		ratio = math.clamp(staminaCurrent / staminaMax, 0, 1)
 	end
-	barFill.Size = UDim2.new(ratio, 0, 1, 0)
-	barFill.BackgroundColor3 = colorForStaminaRatio(ratio)
+	if staminaSystemOn and barFill then
+		barFill.Size = UDim2.new(ratio, 0, 1, 0)
+		barFill.BackgroundColor3 = colorForStaminaRatio(ratio)
+	end
 	speedText.Text = string.format("Speed: %d", speedValue and math.floor(speedValue.Value + 0.5) or 0)
-	if costsText then
+	if staminaSystemOn and costsText then
 		costsText.Text = formatCosts()
 	end
 
-	-- Visual feedback when insufficient stamina (<min of any cost)
-	local minCost = math.min(C.DashStaminaCost or 0, C.SlideStaminaCost or 0, C.WallJumpStaminaCost or 0)
-	if staminaCurrent < minCost then
-		flashBar(Color3.fromRGB(220, 80, 80))
+	if staminaSystemOn then
+		local minCost = math.min(C.DashStaminaCost or 0, C.SlideStaminaCost or 0, C.WallJumpStaminaCost or 0)
+		if staminaCurrent < minCost then
+			flashBar(Color3.fromRGB(220, 80, 80))
+		end
 	end
 
 	-- Icons enabled/disabled based on stamina, state, and cooldowns

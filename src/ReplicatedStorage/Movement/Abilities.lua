@@ -386,11 +386,13 @@ function Abilities.slide(character)
 
 	-- Check stamina cost - we'll let the ParkourController handle the actual consumption
 	-- to avoid conflicts with the local stamina system
-	local staminaCost = Config.SlideStaminaCost or 12
-	local cs = game:GetService("ReplicatedStorage"):FindFirstChild("ClientState")
-	local staminaValue = cs and cs:FindFirstChild("Stamina")
-	if staminaValue and staminaValue.Value < staminaCost then
-		return function() end
+	if Config.StaminaEnabled == true then
+		local staminaCost = Config.SlideStaminaCost or 12
+		local cs = game:GetService("ReplicatedStorage"):FindFirstChild("ClientState")
+		local staminaValue = cs and cs:FindFirstChild("Stamina")
+		if staminaValue and staminaValue.Value < staminaCost then
+			return function() end
+		end
 	end
 
 	local originalWalkSpeed = humanoid.WalkSpeed
@@ -879,7 +881,12 @@ local function detectLedgeForMantle(root)
 	if verticalDot > allowedDot then
 		return false
 	end
-	if not ParkourSurfaceGate.isMechanicAllowed(res.Instance, "Mantle") then
+	-- Obstacle ahead is used for mantle and for automatic ledge-hang (low ceiling). Mantle still
+	-- requires Mantle = true in tryMantle; hang only needs LedgeHang not false (see ParkourSurfaceGate).
+	if
+		not ParkourSurfaceGate.isMechanicAllowed(res.Instance, "Mantle")
+		and not ParkourSurfaceGate.isMechanicAllowed(res.Instance, "LedgeHang")
+	then
 		return false
 	end
 	-- Check ledge height within window above waist (root center)
@@ -900,8 +907,8 @@ function Abilities.isMantleCandidate(character)
 	end
 	-- Consider mantle candidate if ledge is detectable ahead even without input (use extended sweep)
 	local distance = Config.MantleDetectionDistance or 4.5
-	local ok = detectLedgeForMantle(root)
-	if ok == true then
+	local ok, hitRes = detectLedgeForMantle(root)
+	if ok == true and hitRes and ParkourSurfaceGate.isMechanicAllowed(hitRes.Instance, "Mantle") then
 		return true
 	end
 	-- Fallback: quick velocity-facing sweep like in detectLedgeForMantle extended branch
@@ -952,7 +959,13 @@ function Abilities.isMantleCandidate(character)
 	return false
 end
 
-function Abilities.tryMantle(character)
+-- options.climbFinish + options.hitRes + options.topY: skip ray detect and approach-speed gating (used when ending climb on Climbable top).
+function Abilities.tryMantle(character, options)
+	options = options or {}
+	local climbFinish = options.climbFinish == true
+	local forcedHitRes = options.hitRes
+	local forcedTopY = options.topY
+
 	if not (Config.MantleEnabled ~= false) then
 		return false
 	end
@@ -964,48 +977,66 @@ function Abilities.tryMantle(character)
 	if not root or not humanoid then
 		return false
 	end
-	local ok, hitRes, topY = detectLedgeForMantle(root)
-	if not ok then
-		return false
+
+	local ok, hitRes, topY
+	if climbFinish and forcedHitRes and forcedHitRes.Instance and typeof(forcedTopY) == "number" then
+		if not ParkourSurfaceGate.isMantleAllowedWhenFinishingClimb(forcedHitRes.Instance) then
+			return false
+		end
+		ok, hitRes, topY = true, forcedHitRes, forcedTopY
+	else
+		ok, hitRes, topY = detectLedgeForMantle(root)
+		if not ok then
+			return false
+		end
 	end
-	-- Approach gating: require facing and velocity towards the wall to avoid auto-catching edges when falling off
-	local toWall = (hitRes.Position - root.Position)
-	local toWallHoriz = Vector3.new(toWall.X, 0, toWall.Z)
+
+	-- Horizontal direction from player toward the obstacle (clearance + approach)
+	local toWallVec = (hitRes.Position - root.Position)
+	local toWallHoriz = Vector3.new(toWallVec.X, 0, toWallVec.Z)
+	if toWallHoriz.Magnitude < 0.05 then
+		local n = hitRes.Normal
+		toWallHoriz = Vector3.new(-n.X, 0, -n.Z)
+	end
+	if toWallHoriz.Magnitude < 0.05 then
+		toWallHoriz = Vector3.new(root.CFrame.LookVector.X, 0, root.CFrame.LookVector.Z)
+	end
 	if toWallHoriz.Magnitude < 0.05 then
 		return false
 	end
 	local towards = toWallHoriz.Unit
-	local forward = Vector3.new(root.CFrame.LookVector.X, 0, root.CFrame.LookVector.Z)
-	local faceDot = (forward.Magnitude > 0.01) and forward.Unit:Dot(towards) or -1
-	local vel = root.AssemblyLinearVelocity
-	local horiz = Vector3.new(vel.X, 0, vel.Z)
-	local speed = horiz.Magnitude
-	local approachDot = (horiz.Magnitude > 0.01) and horiz.Unit:Dot(towards) or -1
-	local minFace = Config.MantleFacingDotMin or 0.35
-	local minApproach = Config.MantleApproachDotMin or 0.35
-	local minSpeed = Config.MantleApproachSpeedMin or 6
-	-- Fallbacks: if facing is very strong, allow reduced approachDot requirement; also consider Humanoid.MoveDirection when AssemblyLinearVelocity is small
-	if Config.MantleUseMoveDirFallback then
-		local hum = humanoid
-		if hum then
-			local md = hum.MoveDirection
-			if md.Magnitude > 0.01 and horiz.Magnitude < 1.0 then
-				local mdHoriz = Vector3.new(md.X, 0, md.Z).Unit
-				approachDot = mdHoriz:Dot(towards)
-				-- Treat speed as WalkSpeed scale in this corner case
-				speed = math.max(speed, hum.WalkSpeed * 0.35)
+
+	-- Approach gating: require facing and velocity towards the wall (skipped when pulling up from climb)
+	if not climbFinish then
+		local forward = Vector3.new(root.CFrame.LookVector.X, 0, root.CFrame.LookVector.Z)
+		local faceDot = (forward.Magnitude > 0.01) and forward.Unit:Dot(towards) or -1
+		local vel = root.AssemblyLinearVelocity
+		local horiz = Vector3.new(vel.X, 0, vel.Z)
+		local speed = horiz.Magnitude
+		local approachDot = (horiz.Magnitude > 0.01) and horiz.Unit:Dot(towards) or -1
+		local minFace = Config.MantleFacingDotMin or 0.35
+		local minApproach = Config.MantleApproachDotMin or 0.35
+		local minSpeed = Config.MantleApproachSpeedMin or 6
+		if Config.MantleUseMoveDirFallback then
+			local hum = humanoid
+			if hum then
+				local md = hum.MoveDirection
+				if md.Magnitude > 0.01 and horiz.Magnitude < 1.0 then
+					local mdHoriz = Vector3.new(md.X, 0, md.Z).Unit
+					approachDot = mdHoriz:Dot(towards)
+					speed = math.max(speed, hum.WalkSpeed * 0.35)
+				end
+			end
+			local relaxFace = Config.MantleSpeedRelaxDot or 0.9
+			local relaxFactor = Config.MantleSpeedRelaxFactor or 0.4
+			if faceDot >= relaxFace then
+				minApproach = math.min(minApproach, minApproach * relaxFactor)
+				minSpeed = math.min(minSpeed, minSpeed * relaxFactor)
 			end
 		end
-		local relaxFace = Config.MantleSpeedRelaxDot or 0.9
-		local relaxFactor = Config.MantleSpeedRelaxFactor or 0.4
-		if faceDot >= relaxFace then
-			-- Reduce required approach and speed thresholds when perfectly facing the wall (straight-on)
-			minApproach = math.min(minApproach, minApproach * relaxFactor)
-			minSpeed = math.min(minSpeed, minSpeed * relaxFactor)
+		if (faceDot < minFace) or (approachDot < minApproach) or (speed < minSpeed) then
+			return false
 		end
-	end
-	if (faceDot < minFace) or (approachDot < minApproach) or (speed < minSpeed) then
-		return false
 	end
 
 	-- Final clearance check before starting mantle animation
@@ -1029,6 +1060,10 @@ function Abilities.tryMantle(character)
 			end
 			return false -- insufficient clearance, should try ledge hang instead
 		end
+	end
+
+	if not ParkourSurfaceGate.isMechanicAllowed(hitRes.Instance, "Mantle") then
+		return false
 	end
 
 	lastMantleTick = now

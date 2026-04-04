@@ -5,8 +5,17 @@ local ServerScriptService = game:GetService("ServerScriptService")
 
 local BOMB_TAG_ATTRIBUTE = "BombTagActive"
 
-local PlayerProfile = require(ServerScriptService:WaitForChild("PlayerProfile"))
-local Leaderboards = require(ServerScriptService:WaitForChild("Leaderboards"))
+local playerProfileModule = ServerScriptService:FindFirstChild("PlayerProfile")
+local PlayerProfile = playerProfileModule and require(playerProfileModule)
+if not PlayerProfile then
+	warn("[BombMatchManager] PlayerProfile module not found in ServerScriptService")
+end
+
+local leaderboardsModule = ServerScriptService:FindFirstChild("Leaderboards")
+local Leaderboards = leaderboardsModule and require(leaderboardsModule)
+if not Leaderboards then
+	warn("[BombMatchManager] Leaderboards module not found in ServerScriptService")
+end
 
 export type MatchPlayerEntry = {
 	player: Player,
@@ -293,6 +302,9 @@ end
 
 function ManagerMethods:_updatePlayerStats(player, params)
 	if not player or not player.Parent then
+		return
+	end
+	if not PlayerProfile or not Leaderboards then
 		return
 	end
 

@@ -1,8 +1,18 @@
 local Players = game:GetService("Players")
 local ServerScriptService = game:GetService("ServerScriptService")
 
-local PlayerProfile = require(ServerScriptService:WaitForChild("PlayerProfile"))
-local Leaderboards = require(ServerScriptService:WaitForChild("Leaderboards"))
+local playerProfileModule = ServerScriptService:FindFirstChild("PlayerProfile")
+if not playerProfileModule then
+	warn("[DailyReset] PlayerProfile module not found in ServerScriptService")
+	return
+end
+local PlayerProfile = require(playerProfileModule)
+local leaderboardsEntry = ServerScriptService:FindFirstChild("Leaderboards")
+if not leaderboardsEntry then
+	warn("[DailyReset] Leaderboards module not found in ServerScriptService")
+	return
+end
+local Leaderboards = require(leaderboardsEntry)
 
 local currentDate = Leaderboards.GetCurrentDailyKey()
 

@@ -1,6 +1,23 @@
 -- Centralized player profile management using a single DataStore schema
 
 local DataStoreService = game:GetService("DataStoreService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local function readProfilePacing()
+	local movement = ReplicatedStorage:FindFirstChild("Movement")
+	local configModule = movement and movement:FindFirstChild("Config")
+	if not configModule then
+		return 30, 5000
+	end
+	local ok, cfg = pcall(require, configModule)
+	if not ok or type(cfg) ~= "table" then
+		return 30, 5000
+	end
+	return tonumber(cfg.PlayerProfileSaveIntervalSeconds) or 30,
+		tonumber(cfg.PlayerProfileCriticalSaveThreshold) or 5000
+end
+
+local SAVE_INTERVAL, CRITICAL_SAVE_THRESHOLD = readProfilePacing()
 
 local PROFILE_STORE_NAME = "SkyLeap_Profiles_v1"
 local store = DataStoreService:GetDataStore(PROFILE_STORE_NAME)
@@ -10,8 +27,6 @@ local PlayerProfile = {}
 local ACTIVE = {}
 local PENDING_CHANGES = {} -- Buffer changes before saving
 local LAST_SAVE = {} -- Track last save time per user
-local SAVE_INTERVAL = 30 -- Save every 30 seconds maximum
-local CRITICAL_SAVE_THRESHOLD = 5000 -- Auto-save if coins/diamonds change by this much
 local LOADING = {} -- Track profiles currently being loaded to prevent duplicate requests
 local SAVE_QUEUE = {} -- Queue for DataStore operations to prevent overload
 local MAX_CONCURRENT_SAVES = 1 -- Maximum concurrent DataStore operations (reduced to prevent overload)

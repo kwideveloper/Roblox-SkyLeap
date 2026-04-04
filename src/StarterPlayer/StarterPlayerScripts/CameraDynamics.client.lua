@@ -322,6 +322,7 @@ local function setup()
 		local cs = ensureClientStateFolder()
 		local fovOverrideActive = (cs:FindFirstChild("CameraFovOverrideActive") and cs.CameraFovOverrideActive.Value)
 		local fovOverrideValue = (cs:FindFirstChild("CameraFovOverrideValue") and cs.CameraFovOverrideValue.Value)
+		local isLedgeHanging = (cs:FindFirstChild("IsLedgeHanging") and cs.IsLedgeHanging.Value) == true
 		if fovOverrideActive and typeof(fovOverrideValue) == "number" then
 			local cur = camera.FieldOfView
 			local target = math.clamp(fovOverrideValue, 10, 120)
@@ -331,12 +332,16 @@ local function setup()
 			return
 		end
 		local v = state.root.AssemblyLinearVelocity
+		if isLedgeHanging then
+			v = Vector3.new(0, 0, 0)
+		end
 		local horizSpeed = Vector3.new(v.X, 0, v.Z).Magnitude
-		local fullSpeed = getClientSpeed() or v.Magnitude
+		local fullSpeed = isLedgeHanging and 0 or (getClientSpeed() or v.Magnitude)
 		local vy = v.Y
 		-- Client state flags for other effects
 		local isSprinting = (cs:FindFirstChild("IsSprinting") and cs.IsSprinting.Value) or false
-		local airborne = state.humanoid.FloorMaterial == Enum.Material.Air
+		-- Ledge hang uses Physics/Air; do not treat as airborne for shake/wind
+		local airborne = (not isLedgeHanging) and (state.humanoid.FloorMaterial == Enum.Material.Air)
 		local momentum = getClientMomentum()
 
 		-- FOV cap: allow high speeds (hooks/pads) to exceed base max by extraFromSpeed

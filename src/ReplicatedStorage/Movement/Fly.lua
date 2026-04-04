@@ -7,6 +7,12 @@ local UserInputService = game:GetService("UserInputService")
 
 local Config = require(ReplicatedStorage.Movement.Config)
 
+local function debugFlyPrint(...)
+	if Config.DebugFly then
+		print(...)
+	end
+end
+
 local Fly = {}
 
 -- Configuration
@@ -69,7 +75,7 @@ function Fly.start(character)
 	local currentVel = root.AssemblyLinearVelocity
 	activeFlying[character].velocity = currentVel
 
-	print("[Fly] Flying activated for character")
+	debugFlyPrint("[Fly] Flying activated for character")
 	return true
 end
 
@@ -109,7 +115,7 @@ function Fly.stop(character)
 		end
 	end)
 
-	print("[Fly] Flying deactivated, state restored")
+	debugFlyPrint("[Fly] Flying deactivated, state restored")
 
 	-- Clear flying state
 	activeFlying[character] = nil

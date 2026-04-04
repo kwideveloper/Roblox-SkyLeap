@@ -5,7 +5,12 @@ local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ServerScriptService = game:GetService("ServerScriptService")
 
-local PlayerProfile = require(ServerScriptService:WaitForChild("PlayerProfile"))
+local playerProfileModule = ServerScriptService:FindFirstChild("PlayerProfile")
+if not playerProfileModule then
+	warn("[Currency] PlayerProfile module not found in ServerScriptService")
+	return
+end
+local PlayerProfile = require(playerProfileModule)
 -- TEMPORARY: AntiCheat disabled for debugging
 -- local AntiCheat = require(ServerScriptService:WaitForChild("AntiCheat"))
 

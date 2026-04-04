@@ -467,7 +467,7 @@ function WallJump.isNearWall(character)
 
 	-- Verify if we must activate the wall slide (require stamina > 0)
 	local staminaOk = true
-	do
+	if Config.StaminaEnabled == true then
 		local folder = game:GetService("ReplicatedStorage"):FindFirstChild("ClientState")
 		local staminaValue = folder and folder:FindFirstChild("Stamina")
 		if staminaValue and staminaValue.Value <= 0 then

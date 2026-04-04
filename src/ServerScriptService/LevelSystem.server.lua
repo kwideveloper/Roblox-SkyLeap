@@ -25,7 +25,14 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ServerScriptService = game:GetService("ServerScriptService")
 local CollectionService = game:GetService("CollectionService")
 
-local PlayerProfile = require(ServerScriptService:WaitForChild("PlayerProfile"))
+local SharedUtils = require(ReplicatedStorage:WaitForChild("SharedUtils"))
+
+local playerProfileModule = ServerScriptService:FindFirstChild("PlayerProfile")
+if not playerProfileModule then
+	warn("[LevelSystem] PlayerProfile module not found in ServerScriptService")
+	return
+end
+local PlayerProfile = require(playerProfileModule)
 
 local BOMB_TAG_ACTIVE_ATTRIBUTE = "BombTagActive"
 
@@ -62,8 +69,44 @@ local function getRemote(name)
 	return remote
 end
 
+local function getRemoteFunction(name)
+	local rf = remoteFolder:FindFirstChild(name)
+	if not rf then
+		rf = Instance.new("RemoteFunction")
+		rf.Name = name
+		rf.Parent = remoteFolder
+	end
+	return rf
+end
+
 local levelSelectRemote = getRemote("SelectLevel")
 local levelCompleteRemote = getRemote("LevelComplete")
+local parkourLevelAttrsRemote = getRemote("ParkourLevelAttributes")
+local getParkourLevelAttributes = getRemoteFunction("GetParkourLevelAttributes")
+
+local ParkourAttributeReplication = require(ReplicatedStorage:WaitForChild("Movement"):WaitForChild("ParkourAttributeReplication"))
+
+getParkourLevelAttributes.OnServerInvoke = function(player)
+	local levelId = playerCurrentLevel[player]
+	if not levelId then
+		return {}
+	end
+	local levels = getAllLevels()
+	local levelObject = levels[levelId]
+	if not levelObject then
+		return {}
+	end
+	local ok, snapOrErr = pcall(function()
+		return ParkourAttributeReplication.buildSnapshotForLevel(levelObject)
+	end)
+	if ok and type(snapOrErr) == "table" then
+		return snapOrErr
+	end
+	if not ok then
+		warn("[LevelSystem] GetParkourLevelAttributes snapshot failed:", snapOrErr)
+	end
+	return {}
+end
 
 -- Find the Levels folder in workspace
 local function findLevelsFolder()
@@ -337,6 +380,17 @@ local function spawnPlayerAtLevel(player, levelId)
 		end
 	end)
 
+	-- Push parkour surface snapshot (same character can change levels without CharacterAdded)
+	local okSnap, snapOrErr = pcall(function()
+		return ParkourAttributeReplication.buildSnapshotForLevel(levelObject)
+	end)
+	if okSnap and type(snapOrErr) == "table" then
+		parkourLevelAttrsRemote:FireClient(player, snapOrErr)
+	else
+		warn("[LevelSystem] Parkour attribute snapshot failed:", snapOrErr)
+		parkourLevelAttrsRemote:FireClient(player, {})
+	end
+
 	-- Notify client
 	levelSelectRemote:FireClient(player, true, metadata)
 
@@ -542,21 +596,7 @@ local function setupFinishDetection(levelObject, finishObject)
 
 		local connection
 		connection = finishObject.Touched:Connect(function(hit)
-			if not hit then
-				return
-			end
-
-			local character = hit.Parent
-			if not character then
-				return
-			end
-
-			local humanoid = character:FindFirstChildOfClass("Humanoid")
-			if not humanoid then
-				return
-			end
-
-			local player = Players:GetPlayerFromCharacter(character)
+			local player = SharedUtils.getPlayerFromTouch(hit)
 			if not player then
 				return
 			end
@@ -602,21 +642,7 @@ local function setupFinishDetection(levelObject, finishObject)
 
 			local connection
 			connection = part.Touched:Connect(function(hit)
-				if not hit then
-					return
-				end
-
-				local character = hit.Parent
-				if not character then
-					return
-				end
-
-				local humanoid = character:FindFirstChildOfClass("Humanoid")
-				if not humanoid then
-					return
-				end
-
-				local player = Players:GetPlayerFromCharacter(character)
+				local player = SharedUtils.getPlayerFromTouch(hit)
 				if not player then
 					return
 				end

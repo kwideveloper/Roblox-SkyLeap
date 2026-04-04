@@ -2,7 +2,12 @@ local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ServerScriptService = game:GetService("ServerScriptService")
 
-local PlayerProfile = require(ServerScriptService:WaitForChild("PlayerProfile"))
+local playerProfileModule = ServerScriptService:FindFirstChild("PlayerProfile")
+if not playerProfileModule then
+	warn("[PlaytimeRewards] PlayerProfile module not found in ServerScriptService")
+	return
+end
+local PlayerProfile = require(playerProfileModule)
 
 local Remotes = ReplicatedStorage:WaitForChild("Remotes")
 local RF_Request = Remotes:WaitForChild("PlaytimeRequest")

@@ -1,7 +1,11 @@
 local DataStoreService = game:GetService("DataStoreService")
 local ServerScriptService = game:GetService("ServerScriptService")
 
-local PlayerProfile = require(ServerScriptService:WaitForChild("PlayerProfile"))
+local playerProfileModule = ServerScriptService:FindFirstChild("PlayerProfile")
+local PlayerProfile = playerProfileModule and require(playerProfileModule)
+if not PlayerProfile then
+	warn("[Leaderboards] PlayerProfile module not found; donation profile hooks disabled")
+end
 
 local Leaderboards = {}
 
@@ -111,6 +115,9 @@ function Leaderboards.RecordDonation(userId, amount)
 end
 
 function Leaderboards.RecordDonationPurchase(player, amount)
+	if not PlayerProfile then
+		return 0
+	end
 	if not player or not player.Parent then
 		return 0
 	end

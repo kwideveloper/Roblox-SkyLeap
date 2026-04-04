@@ -1232,11 +1232,13 @@ function LedgeHang.isActive(character)
 end
 
 -- Update hanging position and handle horizontal movement
-function LedgeHang.maintain(character, moveDirection)
+function LedgeHang.maintain(character, moveDirection, dt)
 	local hangData = activeHangs[character]
 	if not hangData then
 		return false
 	end
+
+	local step = (typeof(dt) == "number" and dt > 0 and dt < 0.5) and dt or (1 / 60)
 
 	local root, humanoid = getCharacterParts(character)
 	if not root or not humanoid then
@@ -1248,15 +1250,16 @@ function LedgeHang.maintain(character, moveDirection)
 
 	-- Handle horizontal movement along the ledge
 	local rightVector = hangData.forwardDirection:Cross(Vector3.yAxis)
-	local horizontalInput = Vector3.new()
-	local isMoving = false
-
+	local dead = Config.LedgeHangMoveInputDeadzone or 0.12
+	local ledgeLateralDot = 0
 	if moveDirection and moveDirection.Magnitude > 0.1 then
-		-- Project input onto ledge-relative directions
-		local rightDot = moveDirection:Dot(rightVector)
-		horizontalInput = rightVector * rightDot
-		isMoving = math.abs(rightDot) > 0.1
+		local rd = moveDirection:Dot(rightVector)
+		if math.abs(rd) >= dead then
+			ledgeLateralDot = rd
+		end
 	end
+	local horizontalInput = rightVector * ledgeLateralDot
+	local isMoving = math.abs(ledgeLateralDot) > 1e-4
 
 	-- Handle movement animation
 	pcall(function()
@@ -1270,12 +1273,11 @@ function LedgeHang.maintain(character, moveDirection)
 				end
 
 				-- Determine direction and play appropriate animation
-				local rightDot = moveDirection and moveDirection:Dot(rightVector) or 0
 				local animName = "LedgeHangMove" -- fallback
 
-				if rightDot > 0.1 then
+				if ledgeLateralDot > 1e-4 then
 					animName = "LedgeHangRight"
-				elseif rightDot < -0.1 then
+				elseif ledgeLateralDot < -1e-4 then
 					animName = "LedgeHangLeft"
 				end
 
@@ -1337,12 +1339,11 @@ function LedgeHang.maintain(character, moveDirection)
 			end
 		elseif isMoving and hangData.isPlayingMoveAnim then
 			-- Check if direction changed while moving
-			local rightDot = moveDirection and moveDirection:Dot(rightVector) or 0
 			local newAnimName = "LedgeHangMove" -- fallback
 
-			if rightDot > 0.1 then
+			if ledgeLateralDot > 1e-4 then
 				newAnimName = "LedgeHangRight"
-			elseif rightDot < -0.1 then
+			elseif ledgeLateralDot < -1e-4 then
 				newAnimName = "LedgeHangLeft"
 			end
 
@@ -1358,7 +1359,7 @@ function LedgeHang.maintain(character, moveDirection)
 						if moveAnim then
 							hangData.moveTrack = animator:LoadAnimation(moveAnim)
 							if hangData.moveTrack then
-								hangData.moveTrack.Priority = Enum.AnimationPriority.Action
+								hangData.moveTrack.Priority = Enum.AnimationPriority.Action2
 								hangData.moveTrack.Looped = true
 								hangData.moveTrack:Play()
 								hangData.currentMoveDirection = newAnimName
@@ -1377,7 +1378,7 @@ function LedgeHang.maintain(character, moveDirection)
 	-- Move along the ledge
 	local moveSpeed = Config.LedgeHangMoveSpeed or 8
 	local currentPos = root.Position
-	local proposedNewPos = currentPos + horizontalInput * moveSpeed * (1 / 60) -- assume 60fps for now
+	local proposedNewPos = currentPos + horizontalInput * moveSpeed * step
 
 	-- Check if proposed movement is within ledge bounds
 	local finalNewPos = proposedNewPos
@@ -1418,18 +1419,18 @@ function LedgeHang.maintain(character, moveDirection)
 
 		-- Clamp the movement along the ledge
 		local clampedMovement =
-			math.clamp(currentAlongLedge + movementDot * moveSpeed * (1 / 60), -maxMovement, maxMovement)
+			math.clamp(currentAlongLedge + movementDot * moveSpeed * step, -maxMovement, maxMovement)
 		local actualMovementDelta = clampedMovement - currentAlongLedge
 
 		-- Apply the clamped movement
 		finalNewPos = currentPos + rightVector * actualMovementDelta
 
 		-- Debug boundary checks
-		if Config.DebugLedgeHang and math.abs(actualMovementDelta - movementDot * moveSpeed * (1 / 60)) > 0.01 then
+		if Config.DebugLedgeHang and math.abs(actualMovementDelta - movementDot * moveSpeed * step) > 0.01 then
 			print(
 				string.format(
 					"[LedgeHang] Movement clamped along ledge - requested: %.2f, applied: %.2f, max range: ±%.2f",
-					movementDot * moveSpeed * (1 / 60),
+					movementDot * moveSpeed * step,
 					actualMovementDelta,
 					maxMovement
 				)
@@ -1555,29 +1556,66 @@ function LedgeHang.tryMantleUp(character)
 				local start = Vector3.new(root.Position.X, hangData.ledgeY + 0.1, root.Position.Z)
 				local upHit = workspace:Raycast(start, Vector3.new(0, chainUp, 0), params)
 				if upHit and upHit.Instance and upHit.Instance:IsA("BasePart") then
-					-- Validate alignment with current wall (normal close to forwardDirection)
-					local n = upHit.Normal
-					local dot = n:Dot(-hangData.forwardDirection) -- surface normal points opposite to forward
-					local okNormal = dot >= (Config.LedgeHangChainNormalDotMin or 0.8)
-					-- Validate horizontal offset small
-					local horizDelta =
-						Vector3.new(upHit.Position.X - root.Position.X, 0, upHit.Position.Z - root.Position.Z)
-					local okHoriz = (horizDelta.Magnitude <= (Config.LedgeHangChainMaxHorizontal or 1.5))
+					local part = upHit.Instance
+					if not ParkourSurfaceGate.isMechanicAllowed(part, "LedgeHang") then
+						-- not a valid ledge surface
+					else
+						local horizDelta =
+							Vector3.new(upHit.Position.X - root.Position.X, 0, upHit.Position.Z - root.Position.Z)
+						local okHoriz = (horizDelta.Magnitude <= (Config.LedgeHangChainMaxHorizontal or 1.5))
 
-					if okNormal and okHoriz then
-						if Config.DebugLedgeHang then
-							print(
-								string.format(
-									"[LedgeHang] Found chain ledge above: dot=%.2f horiz=%.2f",
-									dot,
-									horizDelta.Magnitude
-								)
-							)
-						end
-						-- Stop current hang and start a new one at the higher ledge top
+						local flatIn = Vector3.new(hangData.forwardDirection.X, 0, hangData.forwardDirection.Z)
+						local flatInU = flatIn.Magnitude > 0.01 and flatIn.Unit or Vector3.new(0, 0, 1)
+						local wallOut = -flatInU
+						local n = upHit.Normal
+						local dot = n:Dot(wallOut)
+						local okNormal = dot >= (Config.LedgeHangChainNormalDotMin or 0.8)
+						local chainHit = upHit
 						local newTopY = upHit.Position.Y
-						LedgeHang.stop(character)
-						return LedgeHang.startHang(character, upHit, newTopY, hangData.forwardDirection)
+
+						-- Hitting the underside (or top) of the shelf: normal is mostly Y, not wall-facing
+						if not okNormal and okHoriz then
+							local thresh = Config.LedgeHangChainUndersideNormalThreshold or 0.85
+							if math.abs(n.Y) >= thresh then
+								local surf = hangData.surfaceNormal
+								local wallN = Vector3.new(surf.X, 0, surf.Z)
+								if wallN.Magnitude > 0.05 then
+									wallN = wallN.Unit
+									newTopY = (part.Position + part.CFrame.UpVector * (part.Size.Y * 0.5)).Y
+									local r, u, f = part.CFrame.RightVector, part.CFrame.UpVector, part.CFrame.LookVector
+									local half = 0.5
+										* (
+											part.Size.X * math.abs(wallN:Dot(r))
+											+ part.Size.Y * math.abs(wallN:Dot(u))
+											+ part.Size.Z * math.abs(wallN:Dot(f))
+										)
+									local lip = part.Position + wallN * half
+									chainHit = {
+										Instance = part,
+										Position = Vector3.new(lip.X, newTopY, lip.Z),
+										Normal = wallN,
+									}
+									okNormal = true
+									if Config.DebugLedgeHang then
+										print("[LedgeHang] Chain via shelf underside/top; synthetic wall normal")
+									end
+								end
+							end
+						end
+
+						if okNormal and okHoriz then
+							if Config.DebugLedgeHang then
+								print(
+									string.format(
+										"[LedgeHang] Found chain ledge above: dot=%.2f horiz=%.2f",
+										dot,
+										horizDelta.Magnitude
+									)
+								)
+							end
+							LedgeHang.stop(character)
+							return LedgeHang.startHang(character, chainHit, newTopY, hangData.forwardDirection)
+						end
 					end
 				end
 			end
@@ -1906,12 +1944,25 @@ function LedgeHang.tryDirectionalJump(character, direction)
 			lastHangTime.Value = 0
 			lastHangTime.Parent = cs
 		end
-		-- Set minimum 0.5s global cooldown regardless of wall identification
-		lastHangTime.Value = os.clock() + 0.5
+		local cooldownAfter = (direction == "up") and (Config.LedgeHangUpJumpGlobalCooldown or 0.14) or 0.5
+		lastHangTime.Value = os.clock() + cooldownAfter
 		if Config.DebugLedgeHang then
-			print(string.format("[LedgeHang] Set 0.5s global cooldown after %s jump", direction))
+			print(string.format("[LedgeHang] Set %.2fs global cooldown after %s jump", cooldownAfter, direction))
 		end
 	end)
+
+	-- Same ledge part: avoid instant auto-hang after jump-off (global cooldown is too short for up-jumps)
+	local jumpOffLedge = hangData and hangData.ledgeInstance
+	if jumpOffLedge then
+		if not ledgeCooldowns[character] then
+			ledgeCooldowns[character] = {}
+		end
+		local sameDur = Config.LedgeHangSameLedgeRehangCooldownAfterJump or 0.5
+		ledgeCooldowns[character][jumpOffLedge] = os.clock() + sameDur
+		if Config.DebugLedgeHang then
+			print(string.format("[LedgeHang] Same-ledge rehang cooldown %.2fs on '%s'", sameDur, jumpOffLedge.Name))
+		end
+	end
 
 	-- Unanchor before applying velocity (must be done before LedgeHang.stop to ensure velocity works)
 	if root then

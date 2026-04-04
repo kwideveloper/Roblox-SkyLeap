@@ -1,5 +1,6 @@
 -- Handles models with CollectionService "Animated" tag
 -- Animates objects named "Start" towards the position/rotation of objects named "Finish"
+-- Moves the whole rigid assembly (Start + parts connected via WeldConstraint / welds), not only the root part.
 -- Attributes:
 --   AnimationStyle (string) - Easing style: Linear, Quad, Cubic, Quart, Quint, Sine, Elastic, Back, Bounce (default: "Quad")
 --   Duration (number) - Animation duration in seconds (default: 1)
@@ -8,9 +9,7 @@
 
 local TweenService = game:GetService("TweenService")
 local CollectionService = game:GetService("CollectionService")
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
-
-local SharedUtils = require(ReplicatedStorage:WaitForChild("SharedUtils"))
+local RunService = game:GetService("RunService")
 
 -- Easing style mapping
 local EASING_STYLES = {
@@ -67,6 +66,59 @@ local function findStartAndFinish(model)
 	end
 	
 	return startObj, finishObj
+end
+
+local function cframeFromPositionRotation(pos, rotDeg)
+	if not pos then
+		return CFrame.new()
+	end
+	local r = rotDeg or Vector3.zero
+	return CFrame.new(pos) * CFrame.Angles(math.rad(r.X), math.rad(r.Y), math.rad(r.Z))
+end
+
+-- All BaseParts rigidly connected to root (WeldConstraint, Weld, etc.) so they move together
+local function getRigidAssemblyParts(rootPart)
+	if not rootPart or not rootPart:IsA("BasePart") then
+		return {}
+	end
+	local seen = {}
+	local list = {}
+	local function add(p)
+		if p and p:IsA("BasePart") and not seen[p] then
+			seen[p] = true
+			table.insert(list, p)
+		end
+	end
+	add(rootPart)
+	local ok, connected = pcall(function()
+		return rootPart:GetConnectedParts(true)
+	end)
+	if ok and type(connected) == "table" then
+		for _, p in ipairs(connected) do
+			add(p)
+		end
+	end
+	return list
+end
+
+local function snapRigidAssemblyToRootCFrame(rootPart, worldRootCF)
+	if not rootPart or not worldRootCF then
+		return
+	end
+	local assembly = getRigidAssemblyParts(rootPart)
+	if #assembly == 0 then
+		return
+	end
+	local curRoot = rootPart.CFrame
+	local rel = {}
+	for _, p in ipairs(assembly) do
+		rel[p] = curRoot:ToObjectSpace(p.CFrame)
+	end
+	for _, p in ipairs(assembly) do
+		if p.Parent then
+			p.CFrame = worldRootCF * rel[p]
+		end
+	end
 end
 
 -- Get target properties (position, rotation, etc.) from Finish object
@@ -149,35 +201,65 @@ local function getAnimatedPart(startObj)
 	return nil
 end
 
--- Create and play animation
-local function createAnimation(startObj, targetProperties, tweenInfo)
-	if not startObj then
+-- Tween root CFrame and apply same rigid transform to every welded/connected part
+local function createRigidAssemblyAnimation(startObj, targetProperties, tweenInfo)
+	if not startObj or not targetProperties or not targetProperties.Position then
 		return nil
 	end
-	
-	local targetInstance = getAnimatedPart(startObj)
-	
-	if not targetInstance then
+
+	local rootPart = getAnimatedPart(startObj)
+	if not rootPart then
 		warn("[AnimatedSystem] Could not find target instance to animate in", startObj:GetFullName())
 		return nil
 	end
-	
-	-- Create tween - only animate Position and Rotation (not Size to avoid issues)
-	local tweenProperties = {}
-	if targetProperties.Position then
-		tweenProperties.Position = targetProperties.Position
-	end
-	if targetProperties.Rotation then
-		tweenProperties.Rotation = targetProperties.Rotation
-	end
-	
-	if not next(tweenProperties) then
-		warn("[AnimatedSystem] No valid properties to animate")
+
+	local targetCF = cframeFromPositionRotation(targetProperties.Position, targetProperties.Rotation)
+	local assembly = getRigidAssemblyParts(rootPart)
+	if #assembly == 0 then
 		return nil
 	end
-	
-	-- Create tween
-	local tween = TweenService:Create(targetInstance, tweenInfo, tweenProperties)
+
+	local startCF = rootPart.CFrame
+	local rel = {}
+	for _, p in ipairs(assembly) do
+		rel[p] = startCF:ToObjectSpace(p.CFrame)
+	end
+
+	local progress = Instance.new("NumberValue")
+	progress.Name = "_AnimatedAssemblyTween"
+	progress.Value = 0
+	progress.Parent = rootPart
+
+	local tween = TweenService:Create(progress, tweenInfo, { Value = 1 })
+
+	local function applyAtAlpha(alpha)
+		local cur = startCF:Lerp(targetCF, alpha)
+		for _, p in ipairs(assembly) do
+			if p.Parent then
+				p.CFrame = cur * rel[p]
+			end
+		end
+	end
+
+	local hb = RunService.Heartbeat:Connect(function()
+		applyAtAlpha(progress.Value)
+	end)
+
+	local function cleanup()
+		if hb then
+			hb:Disconnect()
+			hb = nil
+		end
+		if progress and progress.Parent then
+			progress:Destroy()
+		end
+	end
+
+	tween.Completed:Connect(function()
+		applyAtAlpha(1)
+		cleanup()
+	end)
+
 	return tween
 end
 
@@ -257,7 +339,7 @@ local function setupAnimated(model)
 			0
 		)
 		
-		local forwardTween = createAnimation(startObj, targetProperties, forwardTweenInfo)
+		local forwardTween = createRigidAssemblyAnimation(startObj, targetProperties, forwardTweenInfo)
 		if not forwardTween then
 			return
 		end
@@ -289,7 +371,7 @@ local function setupAnimated(model)
 					0
 				)
 				
-				local backwardTween = createAnimation(startObj, startProperties, backwardTweenInfo)
+				local backwardTween = createRigidAssemblyAnimation(startObj, startProperties, backwardTweenInfo)
 				if backwardTween then
 					backwardTween:Play()
 					backwardTween.Completed:Connect(function()
@@ -298,9 +380,11 @@ local function setupAnimated(model)
 						playForwardAnimation()
 					end)
 				else
-					-- If backward animation fails, restore position manually and retry
-					currentAnimatedPart2.Position = originalPosition
-					currentAnimatedPart2.Rotation = originalRotation
+					-- If backward animation fails, restore whole assembly and retry
+					snapRigidAssemblyToRootCFrame(
+						currentAnimatedPart2,
+						cframeFromPositionRotation(originalPosition, originalRotation)
+					)
 					task.delay(0.1, playForwardAnimation)
 				end
 			end
