@@ -115,6 +115,21 @@ The **`Stamina`** CollectionService tag on floor/volumes (see **§2. Floor & Vol
 
 ---
 
+## World currency pickups (touch → coins / diamonds)
+
+**Scripts:** `ServerScriptService/CurrencyPickup.server.lua` · **Tuning:** `ReplicatedStorage/Currency/PickupConfig.lua`
+
+1. Add the CollectionService tag **`CurrencyPickup`** to a **`Model`** or a **`BasePart`** / **`MeshPart`** (the tagged instance is the “root” of the pickup).
+2. On that **same** tagged instance, set at least one numeric attribute:
+   - **`GiveCoins`** — coins granted on first valid touch (per player debounce).
+   - **`GiveDiamonds`** — diamonds granted.
+3. For a **Model**, every **`BasePart`** descendant receives touch handling; parts added later are wired automatically.
+4. After a successful grant, the root is **`Destroy()`** by default. The server fires **`CurrencyUpdated`** with **`AwardedCoins`** / **`AwardedDiamonds`** so the HUD runs the same burst / fly animations as other rewards.
+
+**`PickupConfig`** controls max per attribute, touch debounce, optional max distance from `HumanoidRootPart`, and whether to destroy or only hide the pickup.
+
+---
+
 ## 3. LaunchPad Attributes
 
 **Pads (BasePart) - Attributes:**

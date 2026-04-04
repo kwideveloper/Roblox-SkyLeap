@@ -164,6 +164,7 @@ local function getOrCreateEvent(name)
 end
 
 local CoinArrived = getOrCreateEvent("CoinArrived")
+local DiamondArrived = getOrCreateEvent("DiamondArrived")
 
 -- Animate individual coin/diamond flying to target (like original CurrencyUI)
 local function spawnCurrencyAt(parent, fromPos, toPos, baseSize, imageId, onArrive)
@@ -400,9 +401,11 @@ function RewardAnimations.spawnRewardBurst(amount, rewardType, sourcePosition, s
 			-- Always bump the label for visual feedback
 			bumpCurrencyLabel(targetAnchor, flashColor)
 
-			-- For coins, notify CurrencyUI that a coin arrived so it can increment numbers
+			-- Notify CurrencyUI so display counts rise as each item reaches the HUD
 			if rewardType == "Coins" then
 				CoinArrived:Fire(addThis)
+			elseif rewardType == "Diamonds" then
+				DiamondArrived:Fire(addThis)
 			end
 
 			arrived = arrived + 1

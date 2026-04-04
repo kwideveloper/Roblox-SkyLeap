@@ -161,6 +161,12 @@ CoinArrived.Event:Connect(function(amount)
 	updateAll()
 end)
 
+local DiamondArrived = RewardAnimationsScript:WaitForChild("DiamondArrived")
+DiamondArrived.Event:Connect(function(amount)
+	state.displayDiamonds = (state.displayDiamonds or 0) + amount
+	updateAll()
+end)
+
 -- Hook into tag changes dynamically
 local function onInstanceAdded(inst)
 	updateInstance(inst)
