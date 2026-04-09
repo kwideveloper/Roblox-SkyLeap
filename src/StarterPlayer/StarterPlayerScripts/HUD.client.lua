@@ -161,7 +161,8 @@ local function update()
 		return
 	end
 	local C = require(ReplicatedStorage.Movement.Config)
-	local staminaSystemOn = C.StaminaEnabled == true
+	local zombieTagActive = player:GetAttribute("ZombieTagActive") == true
+	local staminaSystemOn = C.StaminaEnabled == true or zombieTagActive
 	barBg.Visible = staminaSystemOn
 	barLabel.Visible = staminaSystemOn
 	if costsText then
@@ -189,7 +190,11 @@ local function update()
 	if not staminaSystemOn then
 		staminaCurrent = C.StaminaMax
 	end
+	local maxStamInst = folder:FindFirstChild("MaxStamina")
 	local staminaMax = C.StaminaMax
+	if maxStamInst and typeof(maxStamInst.Value) == "number" and maxStamInst.Value > 0 then
+		staminaMax = maxStamInst.Value
+	end
 	local ratio = 0
 	if staminaMax > 0 then
 		ratio = math.clamp(staminaCurrent / staminaMax, 0, 1)

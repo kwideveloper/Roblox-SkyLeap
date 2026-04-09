@@ -17,6 +17,8 @@ type RemoteMap = {
 	ReadyStatus: RemoteEvent,
 	ReadyWarning: RemoteEvent,
 	ReadyToggle: RemoteEvent,
+	ZombieTagSync: RemoteEvent?,
+	ZombieTagAction: RemoteEvent?,
 }
 
 type StateValues = {
@@ -28,6 +30,15 @@ local READY_COLOR = Color3.fromRGB(0, 204, 102)
 local WAITING_COLOR = Color3.fromRGB(0, 170, 255)
 local LOCKED_COLOR = Color3.fromRGB(255, 170, 0)
 local TEAM_HIGHLIGHT_COLOR = Color3.fromRGB(50, 255, 120)
+local ZOMBIE_ALLY_COLOR = Color3.fromRGB(55, 220, 95)
+local ZOMBIE_ENEMY_COLOR = Color3.fromRGB(230, 70, 70)
+
+local function formatClockSeconds(totalSec: number): string
+	totalSec = math.max(0, math.floor((tonumber(totalSec) or 0) + 0.5))
+	local m = math.floor(totalSec / 60)
+	local s = totalSec % 60
+	return string.format("%d:%02d", m, s)
+end
 
 local function getThumbnail(userId: number?)
 	local id = tonumber(userId) or 0
@@ -133,7 +144,7 @@ local function removeHighlight(character: Model?)
 	end
 end
 
-local function applyTeamHighlight(character: Model, color: Color3)
+local function applyTeamHighlight(character: Model, color: Color3, throughWalls: boolean?)
 	if not character then
 		return
 	end
@@ -141,10 +152,11 @@ local function applyTeamHighlight(character: Model, color: Color3)
 	if not highlight then
 		highlight = Instance.new("Highlight")
 		highlight.Name = "TeamHighlight"
-		highlight.FillTransparency = 0.8
-		highlight.OutlineTransparency = 0
+		highlight.FillTransparency = 0.55
+		highlight.OutlineTransparency = 0.2
 		highlight.Parent = character
 	end
+	highlight.DepthMode = throughWalls and Enum.HighlightDepthMode.AlwaysOnTop or Enum.HighlightDepthMode.Occluded
 	highlight.FillColor = color
 	highlight.OutlineColor = color
 	highlight.Adornee = character
@@ -261,6 +273,12 @@ function BombClientController.new(args: {
 			Left = nil :: Frame?,
 			Right = nil :: Frame?,
 		},
+		zombieGui = nil :: ScreenGui?,
+		zombieRoleZombieImage = nil :: GuiObject?,
+		zombieRoleSurvivorImage = nil :: GuiObject?,
+		zombieCountSurvivorsLabel = nil :: TextLabel?,
+		zombieCountZombiesLabel = nil :: TextLabel?,
+		zombieKillToastLabel = nil :: TextLabel?,
 	}
 
 	self:_locateUi(args.playerGui)
@@ -342,6 +360,10 @@ function BombClientController:_locateUi(playerGui: PlayerGui)
 				self.remotes.ReadyToggle:FireServer()
 				return
 			end
+			if self._mode == "Zombie" then
+				self.remotes.ReadyToggle:FireServer({ mode = "Zombie" })
+				return
+			end
 
 			local nextState = not self._readyState
 			self:_setReadyButtonState(nextState)
@@ -402,6 +424,120 @@ function BombClientController:_locateUi(playerGui: PlayerGui)
 	if self.ui.readyMessageLabel then
 		self.ui.readyMessageLabel.Visible = false
 	end
+
+	local zombieGui = playerGui:FindFirstChild("ZombieGui")
+	if zombieGui and zombieGui:IsA("ScreenGui") then
+		self.ui.zombieGui = zombieGui
+		local frame = zombieGui:FindFirstChild("Frame")
+		if frame then
+			local playerImage = frame:FindFirstChild("PlayerImage")
+			if playerImage then
+				local zombieImage = playerImage:FindFirstChild("Zombie")
+				local survivorImage = playerImage:FindFirstChild("Survivor")
+				if zombieImage and zombieImage:IsA("GuiObject") then
+					self.ui.zombieRoleZombieImage = zombieImage
+				end
+				if survivorImage and survivorImage:IsA("GuiObject") then
+					self.ui.zombieRoleSurvivorImage = survivorImage
+				end
+			end
+
+			local playerCount = frame:FindFirstChild("PlayerCount")
+			if playerCount then
+				local survivorsBlock = playerCount:FindFirstChild("Survivors")
+				local zombiesBlock = playerCount:FindFirstChild("Zombies")
+				if survivorsBlock then
+					local survivorsLabel = survivorsBlock:FindFirstChildWhichIsA("TextLabel", true)
+					if survivorsLabel then
+						self.ui.zombieCountSurvivorsLabel = survivorsLabel
+					end
+				end
+				if zombiesBlock then
+					local zombiesLabel = zombiesBlock:FindFirstChildWhichIsA("TextLabel", true)
+					if zombiesLabel then
+						self.ui.zombieCountZombiesLabel = zombiesLabel
+					end
+				end
+			end
+
+			local killToast = frame:FindFirstChild("KillToast")
+			if not killToast then
+				killToast = Instance.new("TextLabel")
+				killToast.Name = "KillToast"
+				killToast.BackgroundTransparency = 1
+				killToast.AnchorPoint = Vector2.new(0.5, 0)
+				killToast.Position = UDim2.fromScale(0.5, 0.18)
+				killToast.Size = UDim2.fromOffset(280, 36)
+				killToast.Font = Enum.Font.GothamBold
+				killToast.TextScaled = true
+				killToast.Text = "+1 kill"
+				killToast.TextColor3 = Color3.fromRGB(255, 240, 120)
+				killToast.TextStrokeTransparency = 0.35
+				killToast.Visible = false
+				killToast.Parent = frame
+			end
+			if killToast and killToast:IsA("TextLabel") then
+				self.ui.zombieKillToastLabel = killToast
+			end
+		end
+		zombieGui.Enabled = false
+	end
+end
+
+function BombClientController:_setZombieGuiEnabled(enabled: boolean)
+	local zombieGui = self.ui.zombieGui
+	if zombieGui then
+		zombieGui.Enabled = enabled
+	end
+end
+
+function BombClientController:_updateZombieUiFromPayload(payload: table)
+	local yourRole = tostring(payload.yourRole or "human")
+	local humans = math.max(0, math.floor(tonumber(payload.humans) or 0))
+	local zombies = math.max(0, math.floor(tonumber(payload.zombies) or 0))
+
+	if self.ui.zombieRoleZombieImage then
+		self.ui.zombieRoleZombieImage.Visible = yourRole == "zombie"
+	end
+	if self.ui.zombieRoleSurvivorImage then
+		self.ui.zombieRoleSurvivorImage.Visible = yourRole ~= "zombie"
+	end
+	if self.ui.zombieCountSurvivorsLabel then
+		self.ui.zombieCountSurvivorsLabel.Text = tostring(humans)
+	end
+	if self.ui.zombieCountZombiesLabel then
+		self.ui.zombieCountZombiesLabel.Text = tostring(zombies)
+	end
+end
+
+function BombClientController:_showZombieKillToast(text: string)
+	local label = self.ui.zombieKillToastLabel
+	if not label then
+		return
+	end
+	label.Text = text
+	label.Visible = true
+	local token = tick()
+	label:SetAttribute("Token", token)
+	task.delay(1.2, function()
+		if label.Parent and label:GetAttribute("Token") == token then
+			label.Visible = false
+		end
+	end)
+end
+
+function BombClientController:_onZombieTagAction(payload: any)
+	if typeof(payload) ~= "table" or payload.mode ~= "Zombie" then
+		return
+	end
+	if not self:_shouldProcessEvent(payload) then
+		return
+	end
+
+	if payload.kind == "infection" then
+		-- Hook prepared for future richer killfeed animations/styles.
+		self:_showZombieKillToast(tostring(payload.killText or "+1 kill"))
+	end
 end
 
 function BombClientController:_extractLevelId(metadata): string?
@@ -431,6 +567,159 @@ end
 
 function BombClientController:_clearLevelContext()
 	self._activeLevelId = nil
+end
+
+function BombClientController:_applyZombieRelationshipHighlights(payload: table)
+	if self._mode ~= "Zombie" then
+		self:_clearTeamHighlights()
+		return
+	end
+
+	local phase = payload and payload.phase
+	if phase ~= "active" and phase ~= "prepare_countdown" then
+		self:_clearTeamHighlights()
+		return
+	end
+	if (payload.zombies or 0) <= 0 then
+		self:_clearTeamHighlights()
+		return
+	end
+
+	local listed = payload and payload.players
+	if typeof(listed) ~= "table" then
+		self:_clearTeamHighlights()
+		return
+	end
+
+	local localRole = payload.yourRole
+	local localUserId = self.player and self.player.UserId
+	local keep: { [Player]: boolean } = {}
+
+	for _, info in ipairs(listed) do
+		local userId = info and info.UserId
+		if typeof(userId) == "number" and userId ~= localUserId then
+			local target = Players:GetPlayerByUserId(userId)
+			if target and target.Parent then
+				local targetIsZombie = info.IsZombie == true
+				local allyColor = ZOMBIE_ALLY_COLOR
+				local enemyColor = ZOMBIE_ENEMY_COLOR
+				local color = enemyColor
+				if localRole == "zombie" then
+					color = targetIsZombie and allyColor or enemyColor
+				else
+					color = targetIsZombie and enemyColor or allyColor
+				end
+				local throughWalls = (color == allyColor)
+				keep[target] = true
+				self:_ensureTeamHighlightForPlayer(target, color, throughWalls)
+			end
+		end
+	end
+
+	for player in pairs(self.teamHighlightConnections) do
+		if not keep[player] then
+			self:_removeTeamHighlightForPlayer(player)
+		end
+	end
+end
+
+function BombClientController:_onZombieTagSync(payload: any)
+	if typeof(payload) ~= "table" or payload.mode ~= "Zombie" then
+		return
+	end
+	if not self:_shouldProcessEvent(payload) then
+		return
+	end
+
+	self:_activateZombieMode()
+
+	local lid = self:_extractLevelId(payload)
+	if lid then
+		self._activeLevelId = lid
+	end
+
+	local phase = payload.phase or "idle"
+	local roleLabel = tostring(payload.yourRoleLabel or ((payload.yourRole == "zombie") and "Zombie" or "Superviviente"))
+	local counter = self.ui.counterLabel
+	local starting = self.ui.startingLabel
+	local move = self.ui.moveMessageLabel
+
+	if phase == "lobby_countdown" then
+		local lobbyLeft = tonumber(payload.lobbyCountdownLeft) or 0
+		if starting then
+			starting.Visible = true
+			starting.Text = string.format("Starting in %s", formatClockSeconds(lobbyLeft))
+		end
+		if counter then
+			counter.Visible = true
+			counter.Text = formatClockSeconds(lobbyLeft)
+		end
+		if move then
+			move.Visible = true
+			move.Text = string.format("ROL: %s | Humanos: %d  Zombies: %d", roleLabel, payload.humans or 0, payload.zombies or 0)
+		end
+	elseif phase == "prepare_countdown" then
+		local prepLeft = tonumber(payload.prepareCountdownLeft) or 0
+		if starting then
+			starting.Visible = true
+			starting.Text = string.format("Teleport complete. Match starts in %s", formatClockSeconds(prepLeft))
+		end
+		if counter then
+			counter.Visible = true
+			counter.Text = formatClockSeconds(prepLeft)
+		end
+		if move then
+			move.Visible = true
+			move.Text = string.format("ROL: %s | Humanos: %d  Zombies: %d", roleLabel, payload.humans or 0, payload.zombies or 0)
+		end
+	elseif phase == "active" then
+		if starting then
+			starting.Visible = false
+		end
+		if counter then
+			counter.Visible = true
+			counter.Text = formatClockSeconds(tonumber(payload.roundTimeLeft) or 0)
+		end
+		if move then
+			move.Visible = true
+			move.Text = string.format(
+				"ROL: %s | Humanos: %d  Zombies: %d",
+				roleLabel,
+				payload.humans or 0,
+				payload.zombies or 0
+			)
+		end
+	elseif phase == "intermission" or phase == "ending" then
+		if starting then
+			starting.Visible = true
+			starting.Text = "Next round soon..."
+		end
+		if counter then
+			counter.Visible = false
+		end
+		if move then
+			move.Visible = false
+		end
+	else
+		if starting then
+			starting.Visible = true
+			starting.Text = "Waiting for players (need 3+)..."
+		end
+		if counter then
+			counter.Visible = false
+		end
+		if move then
+			move.Visible = true
+			move.Text = string.format("ROL: %s | Humanos: %d  Zombies: %d", roleLabel, payload.humans or 0, payload.zombies or 0)
+		end
+	end
+
+	self:_setBombGuiEnabled(true)
+	self:_updateZombieUiFromPayload(payload)
+	self:_setZombieGuiEnabled(phase == "prepare_countdown" or phase == "active" or phase == "intermission" or phase == "ending")
+	self:_applyZombieRelationshipHighlights(payload)
+	self:_updateStaminaUI()
+	self:_refreshRootVisibility()
 end
 
 function BombClientController:_hookRemotes()
@@ -500,6 +789,17 @@ function BombClientController:_hookRemotes()
 		self:_onReadyToggle(data)
 	end)
 
+	if self.remotes.ZombieTagSync then
+		connect("ZombieTagSync", function(payload)
+			self:_onZombieTagSync(payload)
+		end)
+	end
+	if self.remotes.ZombieTagAction then
+		connect("ZombieTagAction", function(payload)
+			self:_onZombieTagAction(payload)
+		end)
+	end
+
 	local isActiveValue = self.stateValues.isActive
 	if isActiveValue then
 		table.insert(
@@ -512,9 +812,10 @@ function BombClientController:_hookRemotes()
 end
 
 function BombClientController:_updateStaminaUI()
-	local isActive = false
-	if self.stateValues.isActive then
-		isActive = self.stateValues.isActive.Value
+	-- Hide stamina HUD only during classic Bomb Tag match (not FFA / Zombie).
+	local hideStamina = false
+	if self.stateValues.isActive and self.stateValues.isActive.Value then
+		hideStamina = self._mode == "classic"
 	end
 
 	local staminaGui = self.player.PlayerGui:FindFirstChild("Stamina")
@@ -529,12 +830,12 @@ function BombClientController:_updateStaminaUI()
 
 	local staminaBg = container:FindFirstChild("StaminaBg")
 	if staminaBg then
-		staminaBg.Visible = not isActive
+		staminaBg.Visible = not hideStamina
 	end
 
 	local staminaLabel = container:FindFirstChild("StaminaLabel")
 	if staminaLabel then
-		staminaLabel.Visible = not isActive
+		staminaLabel.Visible = not hideStamina
 	end
 end
 
@@ -556,7 +857,7 @@ function BombClientController:_setReadyButtonVisible(visible: boolean)
 		return
 	end
 
-	if self._mode == "FFA" and visible then
+	if (self._mode == "FFA" or self._mode == "Zombie") and visible then
 		self.ui.readyButton.Visible = true
 		self.ui.readyButton.Active = true
 		self:_setReadyButtonState(false)
@@ -612,7 +913,7 @@ function BombClientController:_setTeamHighlights(
 	team1: { { UserId: number?, Name: string? } },
 	team2: { { UserId: number?, Name: string? } }
 )
-	if self._mode == "FFA" then
+	if self._mode == "FFA" or self._mode == "Zombie" then
 		self:_clearTeamHighlights()
 		return
 	end
@@ -692,6 +993,53 @@ function BombClientController:_activateFfaMode()
 
 	self:_setReadyButtonVisible(true)
 	self:_setReadyButtonState(false)
+end
+
+function BombClientController:_activateZombieMode()
+	if self._mode == "Zombie" then
+		return
+	end
+
+	self._mode = "Zombie"
+	self:_clearTeamHighlights()
+	self:_resetFfaBombState()
+
+	if self.ui.pointsRed then
+		self.ui.pointsRed.Visible = false
+	end
+	if self.ui.pointsBlue then
+		self.ui.pointsBlue.Visible = false
+	end
+	if self.ui.pointsValueFrame and self.ui.pointsValueFrame:IsA("GuiObject") then
+		self.ui.pointsValueFrame.Visible = false
+	end
+	if self.ui.teamFrames.Right then
+		self.ui.teamFrames.Right.Visible = false
+	end
+	if self.ui.teamFrames.Left then
+		self.ui.teamFrames.Left.Visible = true
+	end
+
+	self:_setReadyButtonVisible(true)
+	self:_setReadyButtonState(false)
+	self:_setZombieGuiEnabled(false)
+	self:_updateStaminaUI()
+end
+
+function BombClientController:_deactivateZombieMode()
+	if self._mode ~= "Zombie" then
+		return
+	end
+
+	self._mode = "classic"
+	self:_clearTeamHighlights()
+	self:_resetFfaBombState()
+	self:_setZombieGuiEnabled(false)
+	if self.ui.pointsValueFrame and self.ui.pointsValueFrame:IsA("GuiObject") then
+		self.ui.pointsValueFrame.Visible = true
+	end
+	self:_updateStaminaUI()
+	self:_refreshRootVisibility()
 end
 
 function BombClientController:_deactivateFfaMode()
@@ -1012,7 +1360,7 @@ function BombClientController:_setReadyButtonState(isReady: boolean)
 		return
 	end
 
-	if self._mode == "FFA" then
+	if self._mode == "FFA" or self._mode == "Zombie" then
 		self._readyState = false
 		self.ui.readyButton.Active = true
 		self.ui.readyButton.AutoButtonColor = true
@@ -1068,8 +1416,25 @@ function BombClientController:_onReadyToggle(payload: any)
 		return
 	end
 
+	if payload.mode == "Zombie" then
+		if enabled then
+			self:_activateZombieMode()
+			self:_setBombGuiEnabled(true)
+			self:_setReadyButtonVisible(true)
+		else
+			self:_setReadyButtonVisible(false)
+			self:_setBombGuiEnabled(false)
+			self:_resetFfaBombState()
+			self:_deactivateZombieMode()
+		end
+		return
+	end
+
 	if self._mode == "FFA" and payload.mode ~= "FFA" then
 		self:_deactivateFfaMode()
+	end
+	if self._mode == "Zombie" and payload.mode ~= "Zombie" then
+		self:_deactivateZombieMode()
 	end
 
 	local shouldEnable = enabled and true or false
@@ -1099,6 +1464,14 @@ function BombClientController:_onGameStart(payload)
 	local countdown = nil
 
 	if typeof(payload) == "table" then
+		if payload.mode == "Zombie" then
+			self._activeLevelId = self:_extractLevelId(payload)
+			self:_activateZombieMode()
+			self:_setReadyButtonVisible(true)
+			self:_setBombGuiEnabled(true)
+			self:_refreshRootVisibility()
+			return
+		end
 		if payload.mode == "FFA" then
 			self:_activateFfaMode()
 			self:_setReadyButtonVisible(true)
@@ -1217,6 +1590,8 @@ function BombClientController:_onScoreboardUpdate(data)
 		return
 	elseif self._mode == "FFA" then
 		self:_deactivateFfaMode()
+	elseif self._mode == "Zombie" then
+		self:_deactivateZombieMode()
 	end
 
 	if not self.ui.pointsContainer then
@@ -1336,7 +1711,7 @@ function BombClientController:_onPlatformPrompt(payload)
 end
 
 function BombClientController:_onReadyStatus(isReady: boolean)
-	if self._mode == "FFA" then
+	if self._mode == "FFA" or self._mode == "Zombie" then
 		return
 	end
 	self:_setReadyButtonState(isReady)
@@ -1347,7 +1722,7 @@ function BombClientController:_onReadyWarning(payload)
 		return
 	end
 
-	if self._mode == "FFA" then
+	if self._mode == "FFA" or self._mode == "Zombie" then
 		self.ui.readyMessageLabel.Visible = false
 		return
 	end
@@ -1571,16 +1946,16 @@ function BombClientController:_showWinners(
 	end)
 end
 
-function BombClientController:_ensureTeamHighlightForPlayer(player: Player, color: Color3)
+function BombClientController:_ensureTeamHighlightForPlayer(player: Player, color: Color3, throughWalls: boolean?)
 	if not player or not player.Parent then
 		return
 	end
 
 	local record = self.teamHighlightConnections[player]
-	if record and record.color == color then
+	if record and record.color == color and record.throughWalls == (throughWalls and true or false) then
 		-- ensure highlight still exists
 		if player.Character then
-			applyTeamHighlight(player.Character, color)
+			applyTeamHighlight(player.Character, color, throughWalls)
 		end
 		return
 	elseif record then
@@ -1589,7 +1964,7 @@ function BombClientController:_ensureTeamHighlightForPlayer(player: Player, colo
 
 	local function attach()
 		if player.Character then
-			applyTeamHighlight(player.Character, color)
+			applyTeamHighlight(player.Character, color, throughWalls)
 		end
 	end
 
@@ -1598,7 +1973,7 @@ function BombClientController:_ensureTeamHighlightForPlayer(player: Player, colo
 		task.defer(attach)
 	end)
 
-	self.teamHighlightConnections[player] = { conn = conn, color = color }
+	self.teamHighlightConnections[player] = { conn = conn, color = color, throughWalls = throughWalls and true or false }
 	self.teamHighlightTargets[player] = true
 end
 
@@ -1740,6 +2115,41 @@ function BombClientController:_onGameEnd(payload: any)
 		if self.ui.moveMessageLabel then
 			self.ui.moveMessageLabel.Visible = false
 		end
+		self:_refreshRootVisibility()
+		return
+	end
+
+	if typeof(payload) == "table" and payload.mode == "Zombie" then
+		self:_deactivateZombieMode()
+		self.pointsLockedVisible = false
+		if self.stateValues.isActive then
+			self.stateValues.isActive.Value = false
+		end
+		self:_updateStaminaUI()
+		if self.ui.moveMessageLabel and payload.winnerTeam and payload.reason ~= "leave" then
+			local w = payload.winnerTeam
+			if w == "humans" then
+				self.ui.moveMessageLabel.Text = "Humans win!"
+			elseif w == "zombies" then
+				self.ui.moveMessageLabel.Text = "Zombies win!"
+			else
+				self.ui.moveMessageLabel.Text = "Round over"
+			end
+			self.ui.moveMessageLabel.Visible = true
+		end
+		self:_clearLevelContext()
+		if self.ui.pointsContainer then
+			self.ui.pointsContainer.Visible = false
+		end
+		self:_setReadyButtonVisible(false)
+		self:_setCountdownVisible(false)
+		if self.ui.moveMessageLabel and (not payload.winnerTeam or payload.reason == "leave") then
+			self.ui.moveMessageLabel.Visible = false
+		end
+		if self.ui.startingLabel then
+			self.ui.startingLabel.Visible = false
+		end
+		self:_setZombieGuiEnabled(false)
 		self:_refreshRootVisibility()
 		return
 	end

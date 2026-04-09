@@ -19,19 +19,19 @@ function Stamina.create()
 	}
 end
 
-function Stamina.canStartSprint(stamina)
-	if not isSystemEnabled() then
+function Stamina.canStartSprint(stamina, forceStaminaMode)
+	if not isSystemEnabled() and not forceStaminaMode then
 		return true
 	end
 	return stamina.current >= Config.SprintStartThreshold
 end
 
-function Stamina.setSprinting(stamina, enabled)
-	if not isSystemEnabled() then
+function Stamina.setSprinting(stamina, enabled, forceStaminaMode)
+	if not isSystemEnabled() and not forceStaminaMode then
 		stamina.isSprinting = enabled == true
 		return stamina.isSprinting
 	end
-	stamina.isSprinting = enabled and Stamina.canStartSprint(stamina)
+	stamina.isSprinting = enabled and Stamina.canStartSprint(stamina, forceStaminaMode)
 	return stamina.isSprinting
 end
 
@@ -57,9 +57,12 @@ end
 
 -- Tick with explicit control over whether regeneration is allowed.
 -- Draining still occurs when sprinting, but regen only happens when allowRegen is true.
-function Stamina.tickWithGate(stamina, dt, allowRegen, isMoving)
-	if not isSystemEnabled() then
-		stamina.current = Config.StaminaMax
+-- forceStaminaMode: when true, stamina drains/regens even if Config.StaminaEnabled is false (e.g. ZombieTag).
+-- maxStaminaOverride: cap for current stamina (defaults to Config.StaminaMax).
+function Stamina.tickWithGate(stamina, dt, allowRegen, isMoving, forceStaminaMode, maxStaminaOverride)
+	local cap = maxStaminaOverride or Config.StaminaMax
+	if not isSystemEnabled() and not forceStaminaMode then
+		stamina.current = cap
 		return stamina.current, stamina.isSprinting
 	end
 	if stamina.isSprinting and (isMoving ~= false) then
@@ -70,8 +73,8 @@ function Stamina.tickWithGate(stamina, dt, allowRegen, isMoving)
 		end
 	elseif allowRegen then
 		stamina.current = stamina.current + (Config.StaminaRegenPerSecond * dt)
-		if stamina.current > Config.StaminaMax then
-			stamina.current = Config.StaminaMax
+		if stamina.current > cap then
+			stamina.current = cap
 		end
 	end
 	return stamina.current, stamina.isSprinting

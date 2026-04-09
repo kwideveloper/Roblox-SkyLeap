@@ -58,8 +58,12 @@ local function isBombTagModeActive()
 	return false
 end
 
--- Stamina costs/regen only when enabled and not in BombTag infinite-stamina mode.
+-- ZombieTag always uses stamina. BombTag skips stamina costs unless global StaminaEnabled is on.
 local function shouldApplyStaminaCosts()
+	local lp = Players.LocalPlayer
+	if lp and lp:GetAttribute("ZombieTagActive") == true then
+		return true
+	end
 	return Config.StaminaEnabled == true and not isBombTagModeActive()
 end
 
@@ -277,6 +281,73 @@ local state = {
 	lastAirState = "neutral",
 	airAnimationStartTime = 0,
 }
+
+local zombieConfigResolved: any = nil
+local function getZombieConfigTable()
+	if zombieConfigResolved == false then
+		return nil
+	end
+	if zombieConfigResolved ~= nil then
+		return zombieConfigResolved
+	end
+	local folder = ReplicatedStorage:FindFirstChild("ZombieTag")
+	local cfgScript = folder and folder:FindFirstChild("Config")
+	if not cfgScript then
+		zombieConfigResolved = false
+		return nil
+	end
+	local ok, mod = pcall(require, cfgScript)
+	zombieConfigResolved = (ok and mod) or false
+	return ok and mod or nil
+end
+
+local function getZombieSpeedMultiplier(): number
+	local lp = Players.LocalPlayer
+	if not lp or lp:GetAttribute("ZombieTagActive") ~= true or lp:GetAttribute("ZombieIsInfected") ~= true then
+		return 1
+	end
+	local zc = getZombieConfigTable()
+	return (zc and zc.ZombieSpeedMultiplier) or 1.1
+end
+
+local function getZombieStaminaCap(): number
+	local lp = Players.LocalPlayer
+	if not lp or lp:GetAttribute("ZombieTagActive") ~= true or lp:GetAttribute("ZombieIsInfected") ~= true then
+		return Config.StaminaMax
+	end
+	local zc = getZombieConfigTable()
+	local mult = (zc and zc.ZombieStaminaMaxMultiplier) or 1.2
+	return Config.StaminaMax * mult
+end
+
+local function useZombieForcedStamina(): boolean
+	local lp = Players.LocalPlayer
+	return lp ~= nil and lp:GetAttribute("ZombieTagActive") == true
+end
+
+local function isZombieRoundFrozen(): boolean
+	local lp = Players.LocalPlayer
+	return lp ~= nil and lp:GetAttribute("ZombieRoundFrozen") == true
+end
+
+local function syncZombieStaminaCapFromAttributes()
+	if not state.maxStaminaValue then
+		return
+	end
+	local cap = getZombieStaminaCap()
+	local prevCap = state.maxStaminaValue.Value
+	state.maxStaminaValue.Value = cap
+	if state.stamina then
+		if cap > prevCap then
+			state.stamina.current = cap
+		else
+			state.stamina.current = math.min(state.stamina.current, cap)
+		end
+	end
+	if state.staminaValue and state.stamina then
+		state.staminaValue.Value = state.stamina.current
+	end
+end
 
 local function setProxyWorldY(proxy, targetY)
 	if not proxy then
@@ -1320,9 +1391,17 @@ local function ensureClientState()
 		isDoubleJumping.Parent = folder
 	end
 	state.isDoubleJumpingValue = isDoubleJumping
+
+	syncZombieStaminaCapFromAttributes()
 end
 
 ensureClientState()
+
+if player then
+	player:GetAttributeChangedSignal("ZombieTagActive"):Connect(syncZombieStaminaCapFromAttributes)
+	player:GetAttributeChangedSignal("ZombieIsInfected"):Connect(syncZombieStaminaCapFromAttributes)
+	syncZombieStaminaCapFromAttributes()
+end
 
 -- Apply powerup effects to authoritative local state so HUD doesn't revert
 PowerupActivatedEvt.OnClientEvent:Connect(function(powerupTag, success, partName, quantity, partPosition)
@@ -1389,6 +1468,20 @@ end)
 UserInputService.InputBegan:Connect(function(input, gpe)
 	if gpe then
 		return
+	end
+	if isZombieRoundFrozen() then
+		if
+			input.KeyCode == Enum.KeyCode.Q
+			or input.KeyCode == Enum.KeyCode.C
+			or input.KeyCode == Enum.KeyCode.LeftShift
+			or input.KeyCode == Enum.KeyCode.Space
+			or input.KeyCode == Enum.KeyCode.W
+			or input.KeyCode == Enum.KeyCode.A
+			or input.KeyCode == Enum.KeyCode.S
+			or input.KeyCode == Enum.KeyCode.D
+		then
+			return
+		end
 	end
 
 	local character = getCharacter()
@@ -1948,6 +2041,48 @@ RunService.RenderStepped:Connect(function(dt)
 	end
 
 	local applyStamCosts = shouldApplyStaminaCosts()
+	local zombieForceStam = useZombieForcedStamina()
+	local staminaCapForFrame = getZombieStaminaCap()
+	local zombieFrozen = isZombieRoundFrozen()
+
+	if zombieFrozen then
+		state.sprintHeld = false
+		state.keys.W = false
+		state.keys.A = false
+		state.keys.S = false
+		state.keys.D = false
+		if state.stamina.isSprinting then
+			Stamina.setSprinting(state.stamina, false, zombieForceStam)
+		end
+		humanoid.WalkSpeed = 0
+		humanoid.JumpPower = 0
+		if state.isSprintingValue then
+			state.isSprintingValue.Value = false
+		end
+		if state.speedValue then
+			state.speedValue.Value = 0
+		end
+		if state.staminaValue then
+			state.staminaValue.Value = state.stamina.current
+		end
+		return
+	end
+
+	local bombHolderSpeedMult = 1
+	do
+		local bombTagState = ReplicatedStorage:FindFirstChild("BombTagState")
+		local bombHolder = bombTagState and bombTagState:FindFirstChild("BombHolder")
+		local hasBomb = bombHolder and bombHolder.Value == player.Name
+		if hasBomb then
+			local success, bombCfg = pcall(function()
+				return require(ReplicatedStorage:WaitForChild("BombTag"):WaitForChild("Config"))
+			end)
+			if success and bombCfg then
+				bombHolderSpeedMult = bombCfg.BombHolderSpeedMultiplier or 1
+			end
+		end
+	end
+	local speedMultiplier = bombHolderSpeedMult * getZombieSpeedMultiplier()
 
 	-- Maintain flying state if active (prevent other systems from interfering)
 	if Fly.isActive(character) then
@@ -2088,7 +2223,7 @@ RunService.RenderStepped:Connect(function(dt)
 	if isCrawlingNow then
 		-- Ensure sprint state is fully disabled while crawling to prevent speed ramp from fighting crawl speeds
 		if state.stamina.isSprinting then
-			Stamina.setSprinting(state.stamina, false)
+			Stamina.setSprinting(state.stamina, false, zombieForceStam)
 			state._sprintRampT0 = nil
 			state._sprintDecelT0 = nil
 			state._sprintBaseSpeed = nil
@@ -2096,27 +2231,10 @@ RunService.RenderStepped:Connect(function(dt)
 		-- Skip any WalkSpeed overrides while crawling
 	end
 	if not state.sliding and not isCrawlingNow then
-		-- Check if player has the bomb (for speed boost)
-		local bombTagState = ReplicatedStorage:FindFirstChild("BombTagState")
-		local bombHolder = bombTagState and bombTagState:FindFirstChild("BombHolder")
-		local hasBomb = bombHolder and bombHolder.Value == player.Name
-		local BombTagConfig = nil
-		local speedMultiplier = 1
-		if hasBomb then
-			-- Get bomb tag config for speed multiplier
-			local success, config = pcall(function()
-				return require(ReplicatedStorage:WaitForChild("BombTag"):WaitForChild("Config"))
-			end)
-			if success and config then
-				BombTagConfig = config
-				speedMultiplier = config.BombHolderSpeedMultiplier or 1
-			end
-		end
-		
 		local isMoving = (humanoid.MoveDirection and humanoid.MoveDirection.Magnitude > 0) or false
 		if state.sprintHeld and isMoving then
 			if not state.stamina.isSprinting then
-				if Stamina.setSprinting(state.stamina, true) then
+				if Stamina.setSprinting(state.stamina, true, zombieForceStam) then
 					-- start ramp towards sprint speed
 					state._sprintRampT0 = os.clock()
 					state._sprintBaseSpeed = humanoid.WalkSpeed
@@ -2141,7 +2259,7 @@ RunService.RenderStepped:Connect(function(dt)
 				local alpha = math.clamp((os.clock() - t0) / dur, 0, 1)
 				humanoid.WalkSpeed = cur + (targetBase - cur) * alpha
 				if alpha >= 1 then
-					Stamina.setSprinting(state.stamina, false)
+					Stamina.setSprinting(state.stamina, false, zombieForceStam)
 					state._sprintRampT0 = nil
 					state._sprintDecelT0 = nil
 					state._sprintBaseSpeed = nil
@@ -2187,9 +2305,11 @@ RunService.RenderStepped:Connect(function(dt)
 				state.stamina,
 				dt,
 				allowRegen,
-				(humanoid.MoveDirection and humanoid.MoveDirection.Magnitude > 0)
+				(humanoid.MoveDirection and humanoid.MoveDirection.Magnitude > 0),
+				zombieForceStam,
+				staminaCapForFrame
 			)
-			state.stamina.current = _cur
+			state.stamina.current = math.min(_cur, staminaCapForFrame)
 			state.stamina.isSprinting = s
 			stillSprinting = s
 		else
@@ -2199,8 +2319,9 @@ RunService.RenderStepped:Connect(function(dt)
 		end
 	end
 	if not state.sliding and not isCrawlingNow then
-		if not stillSprinting and humanoid.WalkSpeed ~= Config.BaseWalkSpeed then
-			humanoid.WalkSpeed = Config.BaseWalkSpeed
+		local expectedBase = Config.BaseWalkSpeed * speedMultiplier
+		if not stillSprinting and math.abs(humanoid.WalkSpeed - expectedBase) > 0.05 then
+			humanoid.WalkSpeed = expectedBase
 		end
 	end
 
@@ -2209,7 +2330,7 @@ RunService.RenderStepped:Connect(function(dt)
 	-- Wall slide stamina drain (half sprint rate) while active
 	if applyStamCosts and WallJump.isWallSliding and WallJump.isWallSliding(character) then
 		local drain = (Config.WallSlideDrainPerSecond or (Config.SprintDrainPerSecond * 0.5)) * dt
-		state.stamina.current = math.max(0, state.stamina.current - drain)
+		state.stamina.current = math.max(0, math.min(staminaCapForFrame, state.stamina.current - drain))
 		if state.stamina.current <= 0 then
 			-- stop slide when out of stamina
 			if WallJump.stopSlide then
@@ -2322,7 +2443,10 @@ RunService.RenderStepped:Connect(function(dt)
 
 		local ok = Climb.maintain(character, move)
 		if applyStamCosts then
-			state.stamina.current = state.stamina.current - (Config.ClimbStaminaDrainPerSecond * dt)
+			state.stamina.current = math.max(
+				0,
+				math.min(staminaCapForFrame, state.stamina.current - (Config.ClimbStaminaDrainPerSecond * dt))
+			)
 			if state.stamina.current <= 0 then
 				state.stamina.current = 0
 				Climb.stop(character)
@@ -2331,8 +2455,8 @@ RunService.RenderStepped:Connect(function(dt)
 		end
 		-- Disable sprint while climbing
 		if state.stamina.isSprinting then
-			Stamina.setSprinting(state.stamina, false)
-			humanoid.WalkSpeed = Config.BaseWalkSpeed
+			Stamina.setSprinting(state.stamina, false, zombieForceStam)
+			humanoid.WalkSpeed = Config.BaseWalkSpeed * speedMultiplier
 		end
 	end
 

@@ -63,6 +63,7 @@ RunService.RenderStepped:Connect(function(dt)
 		isLedgeHanging = hangFlag and hangFlag.Value == true
 	end)
 
+	local yaw = 0
 	if isLedgeHanging then
 		-- Sliding on a ledge moves/animates the torso; camera-relative head IK reads as camera shake — hold neutral
 		local settle = 1 - math.exp(-(14 * (dt or 0)))
@@ -81,7 +82,7 @@ RunService.RenderStepped:Connect(function(dt)
 
 		-- Compute yaw (left/right) and pitch (up/down) like reference snippet
 		-- Use asin on local X/Y so signs match typical Roblox rigs
-		local yaw = math.asin(math.clamp(lookLocal.X, -1, 1))
+		yaw = math.asin(math.clamp(lookLocal.X, -1, 1))
 		local pitch = -math.asin(math.clamp(lookLocal.Y, -1, 1))
 
 		-- Clamp

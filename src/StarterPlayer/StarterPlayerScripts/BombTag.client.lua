@@ -48,6 +48,9 @@ local remotesMap = {
 	ReadyStatus = remotesFolder:WaitForChild("BombTagReadyStatus"),
 	ReadyWarning = remotesFolder:WaitForChild("BombTagReadyWarning"),
 	ReadyToggle = remotesFolder:WaitForChild("BombTagReadyToggle"),
+	ZombieTagSync = remotesFolder:WaitForChild("ZombieTagSync"),
+	-- Optional remote: do not block client startup when absent.
+	ZombieTagAction = remotesFolder:FindFirstChild("ZombieTagAction"),
 }
 
 local isActiveValue, bombHolderValue = getBombTagState()

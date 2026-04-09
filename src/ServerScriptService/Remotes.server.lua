@@ -103,6 +103,8 @@ ensureRemoteEvent(remotesFolder, "BombTagReadyStatus")
 ensureRemoteEvent(remotesFolder, "BombTagReadyWarning")
 ensureRemoteEvent(remotesFolder, "BombTagReadyToggle")
 ensureRemoteEvent(remotesFolder, "BombTagScoreboardUpdate")
+ensureRemoteEvent(remotesFolder, "ZombieTagSync")
+ensureRemoteEvent(remotesFolder, "ZombieTagAction")
 
 -- Global leaderboards
 ensureRemoteEvent(remotesFolder, "LeaderboardsUpdate")
