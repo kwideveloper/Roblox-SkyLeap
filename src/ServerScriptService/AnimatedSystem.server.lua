@@ -4,12 +4,27 @@
 -- Attributes:
 --   AnimationStyle (string) - Easing style: Linear, Quad, Cubic, Quart, Quint, Sine, Elastic, Back, Bounce (default: "Quad")
 --   Duration (number) - Animation duration in seconds (default: 1)
---   Loop (bool) - Whether to return to start position after reaching finish (default: true)
+--   Loop (bool) - Ping-pong forever Start<->Finish (default: false). Set true only for endless loop motion.
+--   ReturnAfterSeconds (number, optional) - When Loop is false: after reaching Finish, wait this many seconds then animate back to Start (e.g. doors close). Ignored when Loop is true.
 --   Delay (number, optional) - Delay before starting animation in seconds (default: 0)
+--   WaitForTrigger (bool, optional) - If true, animation does not run until a trigger fires (default: false = immediate)
+--   TriggerGroup (string, optional) - Links external trigger parts (same tag + same group) anywhere in the workspace
+-- Trigger parts: CollectionService tag "AnimationTrigger" on a BasePart
+--   DisableTouchTrigger (bool) - Skip .Touched (default: false)
+--   DisableProximityTrigger (bool) - Skip ProximityPrompt under the part (default: false)
+--   TriggerDebounce (number) - Seconds between valid fires on that part (default: 0.5)
+--   TriggerGroup (string) - Must match the Animated model when the part is NOT inside that model
+--   AllowRetrigger (bool, optional) - If WaitForTrigger: allow firing again after a run (default: false = one activation only)
+--   MaxTriggerActivations (number, optional) - With AllowRetrigger: max total runs from triggers; omit = unlimited
+--   (With ReturnAfterSeconds + WaitForTrigger + not AllowRetrigger + no MaxTriggerActivations: one activation is refunded when the return completes so the door can open again.)
+--   DisableStandingCarry (bool, optional) - If true, players standing on the animated assembly are not moved with it (default: false = carry standing players).
+--   StandingCarryIncludesRotation (bool, optional) - If true, standing riders use full rigid CFrame delta (rotation + translation), like being welded. Default false: only the platform's translation is applied so characters keep their facing and can walk freely on the surface.
+-- Standing carry is applied on the client (AnimatedStandingCarry.client.lua) from the replicated Start root CFrame — no per-tick attributes (replication is too slow for full platform speed).
 
 local TweenService = game:GetService("TweenService")
 local CollectionService = game:GetService("CollectionService")
 local RunService = game:GetService("RunService")
+local Players = game:GetService("Players")
 
 -- Easing style mapping
 local EASING_STYLES = {
@@ -26,9 +41,11 @@ local EASING_STYLES = {
 
 -- Default values
 local DEFAULT_DURATION = 1
-local DEFAULT_LOOP = true
+local DEFAULT_LOOP = false
 local DEFAULT_STYLE = "Quad"
 local DEFAULT_DIRECTION = "Out"
+
+local animatedCleanups = setmetatable({}, { __mode = "k" })
 
 -- Helper to get attribute or default
 local function getAttributeOrDefault(obj, attrName, defaultValue)
@@ -40,6 +57,17 @@ local function getAttributeOrDefault(obj, attrName, defaultValue)
 		return defaultValue
 	end
 	return value
+end
+
+local function isTruthyAttribute(value)
+	if value == true then
+		return true
+	end
+	if type(value) == "string" then
+		local l = string.lower(value)
+		return l == "true" or l == "1" or l == "yes"
+	end
+	return false
 end
 
 -- Find Start and Finish objects within a model
@@ -241,14 +269,15 @@ local function createRigidAssemblyAnimation(startObj, targetProperties, tweenInf
 		end
 	end
 
-	local hb = RunService.Heartbeat:Connect(function()
+	-- PreSimulation runs before physics so translation carry composes with Humanoid walking instead of fighting render-step CFrame snaps.
+	local simConn = RunService.PreSimulation:Connect(function()
 		applyAtAlpha(progress.Value)
 	end)
 
 	local function cleanup()
-		if hb then
-			hb:Disconnect()
-			hb = nil
+		if simConn then
+			simConn:Disconnect()
+			simConn = nil
 		end
 		if progress and progress.Parent then
 			progress:Destroy()
@@ -263,73 +292,231 @@ local function createRigidAssemblyAnimation(startObj, targetProperties, tweenInf
 	return tween
 end
 
+local TRIGGER_TAG = "AnimationTrigger"
+local DEFAULT_TRIGGER_DEBOUNCE = 0.5
+local DEFAULT_MODEL_TRIGGER_DEBOUNCE = 0.35
+
+local function normalizeTriggerGroup(model)
+	local g = model:GetAttribute("TriggerGroup")
+	if type(g) ~= "string" or g == "" then
+		return nil
+	end
+	return g
+end
+
+local function wireTriggerPart(part, onTriggered, allConnections)
+	if not part or not part:IsA("BasePart") then
+		return
+	end
+
+	local debounce = tonumber(part:GetAttribute("TriggerDebounce")) or DEFAULT_TRIGGER_DEBOUNCE
+	local disableTouch = part:GetAttribute("DisableTouchTrigger") == true
+		or isTruthyAttribute(part:GetAttribute("DisableTouchTrigger"))
+	local disablePrompt = part:GetAttribute("DisableProximityTrigger") == true
+		or isTruthyAttribute(part:GetAttribute("DisableProximityTrigger"))
+
+	local lastFire = 0
+	local function tryFire()
+		local now = os.clock()
+		if now - lastFire < debounce then
+			return
+		end
+		lastFire = now
+		onTriggered()
+	end
+
+	local touchConn = nil
+	if not disableTouch then
+		touchConn = part.Touched:Connect(function(hit)
+			local ch = hit and hit.Parent
+			if not ch then
+				return
+			end
+			local hum = ch:FindFirstChildOfClass("Humanoid")
+			if not hum then
+				return
+			end
+			local plr = Players:GetPlayerFromCharacter(ch)
+			if not plr then
+				return
+			end
+			tryFire()
+		end)
+		table.insert(allConnections, touchConn)
+	end
+
+	local prompt = part:FindFirstChildOfClass("ProximityPrompt")
+	if not disablePrompt and prompt then
+		local prConn = prompt.Triggered:Connect(function()
+			tryFire()
+		end)
+		table.insert(allConnections, prConn)
+	end
+
+	if not touchConn and (disablePrompt or not prompt) then
+		warn(
+			string.format(
+				"[AnimatedSystem] AnimationTrigger part %s has no active input: enable touch or add a ProximityPrompt (and ensure it is not disabled via attributes).",
+				part:GetFullName()
+			)
+		)
+	end
+end
+
 -- Setup animation for a model
 local function setupAnimated(model)
 	if not model or not model:IsA("Model") then
 		return
 	end
-	
-	-- Skip if already wired
+
 	if model:GetAttribute("_AnimatedWired") then
 		return
 	end
-	
-	model:SetAttribute("_AnimatedWired", true)
-	
-	-- Find Start and Finish
+
 	local startObj, finishObj = findStartAndFinish(model)
-	
+
 	if not startObj then
 		warn("[AnimatedSystem] Could not find 'Start' object in", model:GetFullName())
 		return
 	end
-	
+
 	if not finishObj then
 		warn("[AnimatedSystem] Could not find 'Finish' object in", model:GetFullName())
 		return
 	end
-	
-	-- Get animation attributes from the model
-	local duration = tonumber(getAttributeOrDefault(model, "Duration", DEFAULT_DURATION)) or DEFAULT_DURATION
-	local shouldLoop = getAttributeOrDefault(model, "Loop", DEFAULT_LOOP)
-	local styleName = tostring(getAttributeOrDefault(model, "AnimationStyle", DEFAULT_STYLE))
-	local delay = tonumber(getAttributeOrDefault(model, "Delay", 0)) or 0
-	
-	-- Get easing style
-	local easingStyle = EASING_STYLES[styleName] or EASING_STYLES[DEFAULT_STYLE]
-	
-	-- Get target and start properties
-	local targetProperties = getTargetProperties(finishObj)
-	local startProperties = getStartProperties(startObj)
-	
-	-- Get the part that will be animated
+
 	local animatedPart = getAnimatedPart(startObj)
 	if not animatedPart then
 		warn("[AnimatedSystem] Could not find part to animate in", startObj:GetFullName())
 		return
 	end
-	
-	-- Save original properties from the animated part (not from startProperties which might be stale)
+
+	model:SetAttribute("_AnimatedWired", true)
+
+	local duration = tonumber(getAttributeOrDefault(model, "Duration", DEFAULT_DURATION)) or DEFAULT_DURATION
+	local shouldLoop = getAttributeOrDefault(model, "Loop", DEFAULT_LOOP)
+	local styleName = tostring(getAttributeOrDefault(model, "AnimationStyle", DEFAULT_STYLE))
+	local delay = tonumber(getAttributeOrDefault(model, "Delay", 0)) or 0
+	local waitForTrigger = isTruthyAttribute(model:GetAttribute("WaitForTrigger"))
+	local triggerGroup = normalizeTriggerGroup(model)
+	local modelTriggerDebounce = tonumber(model:GetAttribute("TriggerDebounce")) or DEFAULT_MODEL_TRIGGER_DEBOUNCE
+	local allowRetrigger = isTruthyAttribute(model:GetAttribute("AllowRetrigger"))
+	local maxTriggerActivations = tonumber(model:GetAttribute("MaxTriggerActivations"))
+	if maxTriggerActivations and maxTriggerActivations <= 0 then
+		maxTriggerActivations = nil
+	end
+
+	local returnAfterSeconds = tonumber(model:GetAttribute("ReturnAfterSeconds"))
+	if returnAfterSeconds and returnAfterSeconds <= 0 then
+		returnAfterSeconds = nil
+	end
+	if shouldLoop and returnAfterSeconds then
+		returnAfterSeconds = nil
+	end
+
+	local easingStyle = EASING_STYLES[styleName] or EASING_STYLES[DEFAULT_STYLE]
+
+	local targetProperties = getTargetProperties(finishObj)
+	local startProperties = getStartProperties(startObj)
+
 	local originalPosition = animatedPart.Position
 	local originalRotation = animatedPart.Rotation
-	
-	-- Update startProperties to match current position (in case Start object was moved)
 	startProperties.Position = originalPosition
 	startProperties.Rotation = originalRotation
-	
-	-- Create animation function
-	local function playForwardAnimation()
+
+	local connections = {}
+	local lastModelTrigger = 0
+	local triggeredLoopRunning = false
+	local oneShotBusy = false
+	local triggerActivationCount = 0
+	local countNextForwardAsTriggerActivation = false
+	local returnSequenceId = 0
+
+	local function disconnectAll()
+		animatedCleanups[model] = nil
+		for _, c in ipairs(connections) do
+			if typeof(c) == "RBXScriptConnection" then
+				c:Disconnect()
+			elseif type(c) == "function" then
+				pcall(c)
+			end
+		end
+		table.clear(connections)
+	end
+
+	animatedCleanups[model] = disconnectAll
+
+	model.Destroying:Connect(function()
+		disconnectAll()
+	end)
+
+	local function refreshStartPropertiesFromOriginal()
+		startProperties.Position = originalPosition
+		startProperties.Rotation = originalRotation
+	end
+
+	local function playBackwardToStart(onComplete)
 		if not startObj or not startObj.Parent or not finishObj or not finishObj.Parent then
+			if type(onComplete) == "function" then
+				task.defer(onComplete)
+			end
 			return
 		end
-		
-		-- Get current animated part (in case it changed)
+
+		refreshStartPropertiesFromOriginal()
+
+		local backwardTweenInfo = TweenInfo.new(
+			duration,
+			easingStyle,
+			Enum.EasingDirection[DEFAULT_DIRECTION],
+			0,
+			false,
+			0
+		)
+
+		local backwardTween = createRigidAssemblyAnimation(startObj, startProperties, backwardTweenInfo)
+		if not backwardTween then
+			local rootPart = getAnimatedPart(startObj)
+			if rootPart then
+				snapRigidAssemblyToRootCFrame(
+					rootPart,
+					cframeFromPositionRotation(originalPosition, originalRotation)
+				)
+			end
+			if type(onComplete) == "function" then
+				task.defer(onComplete)
+			end
+			return
+		end
+
+		backwardTween:Play()
+		backwardTween.Completed:Connect(function()
+			if type(onComplete) == "function" then
+				onComplete()
+			end
+		end)
+	end
+
+	local playForwardAnimation
+
+	playForwardAnimation = function()
+		if not startObj or not startObj.Parent or not finishObj or not finishObj.Parent then
+			if waitForTrigger and not shouldLoop then
+				oneShotBusy = false
+			end
+			countNextForwardAsTriggerActivation = false
+			return
+		end
+
 		local currentAnimatedPart = getAnimatedPart(startObj)
 		if not currentAnimatedPart then
+			if waitForTrigger and not shouldLoop then
+				oneShotBusy = false
+			end
+			countNextForwardAsTriggerActivation = false
 			return
 		end
-		
-		-- Create forward animation (Start -> Finish)
+
 		local forwardTweenInfo = TweenInfo.new(
 			duration,
 			easingStyle,
@@ -338,64 +525,197 @@ local function setupAnimated(model)
 			false,
 			0
 		)
-		
+
 		local forwardTween = createRigidAssemblyAnimation(startObj, targetProperties, forwardTweenInfo)
 		if not forwardTween then
+			if waitForTrigger and not shouldLoop then
+				oneShotBusy = false
+			end
+			countNextForwardAsTriggerActivation = false
 			return
 		end
-		
-		-- Play forward animation
+
+		if countNextForwardAsTriggerActivation then
+			triggerActivationCount = triggerActivationCount + 1
+			countNextForwardAsTriggerActivation = false
+		end
+
+		returnSequenceId = returnSequenceId + 1
+		local forwardReturnId = returnSequenceId
+
 		forwardTween:Play()
-		
-		-- Handle completion
+
 		forwardTween.Completed:Connect(function()
 			if not startObj or not startObj.Parent then
 				return
 			end
-			
-			-- If loop is enabled, return to start
+
 			if shouldLoop then
-				-- Get current animated part again
 				local currentAnimatedPart2 = getAnimatedPart(startObj)
 				if not currentAnimatedPart2 then
 					return
 				end
-				
-				-- Create backward animation (Finish -> Start)
-				local backwardTweenInfo = TweenInfo.new(
-					duration,
-					easingStyle,
-					Enum.EasingDirection[DEFAULT_DIRECTION],
-					0,
-					false,
-					0
-				)
-				
-				local backwardTween = createRigidAssemblyAnimation(startObj, startProperties, backwardTweenInfo)
-				if backwardTween then
-					backwardTween:Play()
-					backwardTween.Completed:Connect(function()
-						-- Loop back to forward animation
-						task.wait(0.05) -- Small delay between loops
+
+				playBackwardToStart(function()
+					task.wait(0.05)
+					if forwardReturnId == returnSequenceId then
 						playForwardAnimation()
+					end
+				end)
+			elseif returnAfterSeconds then
+				task.delay(returnAfterSeconds, function()
+					if not model.Parent or forwardReturnId ~= returnSequenceId then
+						return
+					end
+					playBackwardToStart(function()
+						refreshStartPropertiesFromOriginal()
+						if waitForTrigger and not shouldLoop then
+							oneShotBusy = false
+						end
+						if
+							waitForTrigger
+							and not allowRetrigger
+							and not maxTriggerActivations
+							and returnAfterSeconds
+						then
+							triggerActivationCount = math.max(0, triggerActivationCount - 1)
+						end
 					end)
-				else
-					-- If backward animation fails, restore whole assembly and retry
-					snapRigidAssemblyToRootCFrame(
-						currentAnimatedPart2,
-						cframeFromPositionRotation(originalPosition, originalRotation)
-					)
-					task.delay(0.1, playForwardAnimation)
-				end
+				end)
+			elseif waitForTrigger then
+				oneShotBusy = false
 			end
 		end)
 	end
-	
-	-- Wait for delay if specified, then start animation
-	if delay > 0 then
-		task.delay(delay, playForwardAnimation)
+
+	local function beginPlayback()
+		if not model.Parent then
+			return
+		end
+
+		if waitForTrigger then
+			if not allowRetrigger and triggerActivationCount >= 1 then
+				return
+			end
+			if allowRetrigger and maxTriggerActivations and triggerActivationCount >= maxTriggerActivations then
+				return
+			end
+		end
+
+		local now = os.clock()
+		if now - lastModelTrigger < modelTriggerDebounce then
+			return
+		end
+		lastModelTrigger = now
+
+		if waitForTrigger then
+			if shouldLoop then
+				if triggeredLoopRunning then
+					return
+				end
+				triggeredLoopRunning = true
+			else
+				if oneShotBusy then
+					return
+				end
+				oneShotBusy = true
+				local rootNow = getAnimatedPart(startObj)
+				if rootNow then
+					snapRigidAssemblyToRootCFrame(
+						rootNow,
+						cframeFromPositionRotation(originalPosition, originalRotation)
+					)
+				end
+				refreshStartPropertiesFromOriginal()
+			end
+		end
+
+		local function run()
+			if not model.Parent then
+				if waitForTrigger and not shouldLoop then
+					oneShotBusy = false
+				end
+				countNextForwardAsTriggerActivation = false
+				return
+			end
+			if waitForTrigger then
+				countNextForwardAsTriggerActivation = true
+			end
+			playForwardAnimation()
+		end
+
+		if delay > 0 then
+			task.delay(delay, run)
+		else
+			task.defer(run)
+		end
+	end
+
+	if waitForTrigger then
+		local wiredTriggers = {}
+		local wiredAny = false
+
+		local function tryWireTriggerPart(part)
+			if wiredTriggers[part] then
+				return
+			end
+			wiredTriggers[part] = true
+			wireTriggerPart(part, beginPlayback, connections)
+			wiredAny = true
+		end
+
+		for _, d in ipairs(model:GetDescendants()) do
+			if d:IsA("BasePart") and CollectionService:HasTag(d, TRIGGER_TAG) then
+				tryWireTriggerPart(d)
+			end
+		end
+
+		if triggerGroup then
+			for _, inst in ipairs(CollectionService:GetTagged(TRIGGER_TAG)) do
+				if inst:IsA("BasePart") and not inst:IsDescendantOf(model) then
+					local g = inst:GetAttribute("TriggerGroup")
+					if type(g) == "string" and g == triggerGroup then
+						tryWireTriggerPart(inst)
+					end
+				end
+			end
+		end
+
+		local tagAddedCon = CollectionService:GetInstanceAddedSignal(TRIGGER_TAG):Connect(function(inst)
+			if not model.Parent then
+				return
+			end
+			if not inst:IsA("BasePart") then
+				return
+			end
+			if inst:IsDescendantOf(model) then
+				tryWireTriggerPart(inst)
+				return
+			end
+			if triggerGroup then
+				local g = inst:GetAttribute("TriggerGroup")
+				if type(g) == "string" and g == triggerGroup then
+					tryWireTriggerPart(inst)
+				end
+			end
+		end)
+		table.insert(connections, tagAddedCon)
+
+		if not wiredAny then
+			warn(
+				string.format(
+					"[AnimatedSystem] WaitForTrigger is true on %s but no triggers were found. Add tag %q to a BasePart inside the model, or set TriggerGroup on the model and matching trigger parts outside it.",
+					model:GetFullName(),
+					TRIGGER_TAG
+				)
+			)
+		end
 	else
-		playForwardAnimation()
+		if delay > 0 then
+			task.delay(delay, playForwardAnimation)
+		else
+			playForwardAnimation()
+		end
 	end
 end
 
@@ -416,10 +736,13 @@ CollectionService:GetInstanceAddedSignal("Animated"):Connect(function(model)
 	end
 end)
 
-CollectionService:GetInstanceRemovedSignal("Animated"):Connect(function(model)
-	-- Clean up wiring attribute when tag is removed
-	if model:IsA("Model") then
-		model:SetAttribute("_AnimatedWired", nil)
+CollectionService:GetInstanceRemovedSignal("Animated"):Connect(function(m)
+	if m:IsA("Model") then
+		local fn = animatedCleanups[m]
+		if fn then
+			fn()
+		end
+		m:SetAttribute("_AnimatedWired", nil)
 	end
 end)
 

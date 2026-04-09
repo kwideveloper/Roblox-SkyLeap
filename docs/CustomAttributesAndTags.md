@@ -606,12 +606,50 @@ CollectionService:AddTag(killerModel, "Killer")
   *Default: 1*
 
 - `Loop` (bool, optional)
-  *Whether the animation should loop (go from Start to Finish and back to Start repeatedly).*
-  *Default: true (loops infinitely)*
+  *If true, the object ping-pongs forever: Start → Finish → Start → Finish…*
+  *Default: false (plays Start → Finish once and stops, unless you use `ReturnAfterSeconds` below).*
+
+- `ReturnAfterSeconds` (number, optional)
+  *Only when `Loop` is false. After the forward tween reaches `Finish`, wait this many seconds, then animate back to `Start` (same duration as `Duration`). Use for doors that open then close, bridges that extend then retract, etc. Ignored when `Loop` is true.*
 
 - `Delay` (number, optional)
   *Delay before starting the animation in seconds.*
   *Default: 0*
+
+- `WaitForTrigger` (bool, optional)
+  *If true, the animation does not start on its own; it starts when a trigger fires (touch and/or ProximityPrompt on tagged parts).*
+  *Default: false (immediate start, same as legacy behavior).*
+
+- `TriggerGroup` (string, optional)
+  *Used with `WaitForTrigger` to link **external** parts (outside the model). Set the same string on the animated model and on each external trigger part’s `TriggerGroup` attribute. Parts **inside** the model only need the `AnimationTrigger` tag.*
+
+- `TriggerDebounce` (number, optional)
+  *Minimum seconds between two successful fires for this animated model (anti-spam).*
+  *Default: 0.35*
+
+- `AllowRetrigger` (bool, optional)
+  *Only with `WaitForTrigger`. If false (default), the first successful trigger start counts as the only one — touch/prompt after that does nothing. If true, players can start the animation again after each run finishes (subject to `MaxTriggerActivations` if set).*
+
+- `MaxTriggerActivations` (number, optional)
+  *Only used when `AllowRetrigger` is true. Maximum number of times a trigger may **start** the animation (each forward run from a trigger counts as one). If omitted, retriggers are unlimited.*
+
+- `DisableStandingCarry` (bool, optional)
+  *When **true**, players standing on the animated rigid assembly (the `Start` part and anything rigidly welded to it) are **not** moved with the platform. Default: **false** — **`AnimatedStandingCarry.client.lua`** (StarterCharacterScripts) nudges the local `HumanoidRootPart` each `PreSimulation` by the change in the replicated **`Start` root** `CFrame`, so motion matches the visible platform (no per-tick attributes — those replicate too slowly for full speed).*
+
+- `StandingCarryIncludesRotation` (bool, optional)
+  *When **true**, riders use the full rigid **CFrame** delta (rotation + translation), like being welded to the platform. Default: **false** (translation only). Use **true** for spinning or heavily tilting platforms where you want the character to tilt with the floor.*
+
+**Tag: `AnimationTrigger` (on a BasePart)** — only when `WaitForTrigger` is true:
+
+- **Inside the model:** tag any `BasePart` descendant; touching it (as a player) and/or using a child `ProximityPrompt` starts the animation.
+- **Outside the model:** tag the part, set `TriggerGroup` to match the model’s `TriggerGroup`, and optionally add a `ProximityPrompt` child.
+
+**Optional attributes on each trigger part:**
+
+- `DisableTouchTrigger` (bool) — ignore `.Touched`.
+- `DisableProximityTrigger` (bool) — ignore a child `ProximityPrompt`.
+- `TriggerDebounce` (number) — cooldown per part in seconds (default 0.5).
+- `TriggerGroup` (string) — required for triggers not parented under the animated model; must match the model.
 
 **Behavior:**
 - Works on Models with the "Animated" tag
@@ -619,8 +657,8 @@ CollectionService:AddTag(killerModel, "Killer")
 - "Start" object (part or model) will animate towards the position/rotation of "Finish" object
 - "Start" and "Finish" can be BaseParts or Models
 - For Models, the PrimaryPart (or first BasePart) will be animated
-- Animation loops by default (Start → Finish → Start → ...)
-- If Loop is false, animation only plays once (Start → Finish)
+- If `Loop` is false (default), the animation runs Start → Finish once. With `ReturnAfterSeconds` set, it then waits and returns Start ← Finish automatically.
+- If `Loop` is true, the animation ping-pongs forever (Start ↔ Finish).
 
 **Example Setup:**
 ```lua
@@ -653,7 +691,7 @@ finishPart.Parent = animatedModel
 -- Optional: Configure animation
 animatedModel:SetAttribute("Duration", 2) -- 2 seconds to reach Finish
 animatedModel:SetAttribute("AnimationStyle", "Sine") -- Smooth sine animation
-animatedModel:SetAttribute("Loop", true) -- Loop back to Start position
+animatedModel:SetAttribute("Loop", true) -- Endless ping-pong (omit or false for one-shot / timed return)
 ```
 
 **Advanced Example (Rotating Object):**
@@ -695,9 +733,12 @@ animatedModel:SetAttribute("Loop", false) -- Only rotate once (no return)
 - Position and Rotation are animated; Size is not animated (to avoid scaling issues)
 - For Models, the PrimaryPart property should be set for best results
 - If PrimaryPart is not set, the first BasePart found will be used
-- Animation starts immediately unless Delay is set
+- Animation starts immediately unless `Delay` is set or `WaitForTrigger` is true
+- With `WaitForTrigger` and `Loop` false: by default only **one** trigger activation is allowed (`AllowRetrigger` false). With `AllowRetrigger` true, each new trigger snaps to the original start pose and plays forward again, up to `MaxTriggerActivations` if set. If you use `ReturnAfterSeconds` without `AllowRetrigger` and without `MaxTriggerActivations`, the activation is **refunded** when the automatic return finishes so the player can open the door again after it closes.
+- With `WaitForTrigger` and `Loop` true, the first trigger starts the endless ping-pong; further triggers are ignored (independent of `AllowRetrigger`)
 - Loop works by playing forward animation, then backward animation, then repeating
 - **Welded decorations (spikes, meshes, etc.):** Use `WeldConstraint` (or other rigid welds) so extra parts are **connected to the same rigid assembly** as the animated `Start` root (`GetConnectedParts`). The server moves the whole assembly each frame so spikes move with the platform. Weld to the `BasePart` that is actually animated (typically `Start` or the `Start` model’s `PrimaryPart`). Parts that are only parented but not rigidly connected to that root are not moved.
+- **Standing players:** Client-side carry (`AnimatedStandingCarry.client.lua`) tracks the replicated `Start` root `CFrame` each step. Set `DisableStandingCarry` to **true** to turn that off. Set `StandingCarryIncludesRotation` to **true** if the platform rotates and you need full rigid carry.
 
 ---
 

@@ -6,6 +6,8 @@
 /*.rbxl.lock
 
 monica.md
+# Local MCP secrets (copy from mcp.json.example)
+.cursor
 .cursor/rules/instructions.mdc
 
 .cursor/rules/instructions.mdc
