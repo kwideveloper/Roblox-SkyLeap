@@ -106,6 +106,11 @@ ensureRemoteEvent(remotesFolder, "BombTagScoreboardUpdate")
 ensureRemoteEvent(remotesFolder, "ZombieTagSync")
 ensureRemoteEvent(remotesFolder, "ZombieTagAction")
 
+-- Sniper (hitscan laser): client request + FX replication to other clients
+ensureRemoteEvent(remotesFolder, "SniperRequestFire")
+ensureRemoteEvent(remotesFolder, "SniperLaserFx")
+ensureRemoteEvent(remotesFolder, "SniperAudioFeedback")
+
 -- Global leaderboards
 ensureRemoteEvent(remotesFolder, "LeaderboardsUpdate")
 

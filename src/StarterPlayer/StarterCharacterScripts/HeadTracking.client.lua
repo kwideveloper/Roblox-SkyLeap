@@ -6,6 +6,10 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local player = Players.LocalPlayer
 local character = player.Character or player.CharacterAdded:Wait()
+local humanoid = character:WaitForChild("Humanoid", 30)
+if not humanoid or not humanoid:IsA("Humanoid") then
+	return
+end
 local root = character:WaitForChild("HumanoidRootPart")
 
 -- Find the Neck Motor6D (R15/R6 compatible search)
@@ -47,8 +51,26 @@ local baseWaistC0 = waist and waist.C0 or nil
 local maxYaw = math.rad(60)
 local maxPitch = math.rad(30)
 
-RunService.RenderStepped:Connect(function(dt)
+local function shouldStopHeadTracking(): boolean
+	if character:GetAttribute("_SkyLeapRagdollApplied") then
+		return true
+	end
+	if humanoid.Health <= 0 then
+		return true
+	end
+	local st = humanoid:GetState()
+	if st == Enum.HumanoidStateType.Dead or st == Enum.HumanoidStateType.Physics then
+		return true
+	end
+	return false
+end
+
+local renderConn: RBXScriptConnection?
+renderConn = RunService.RenderStepped:Connect(function(dt)
 	if not character or not character.Parent then
+		return
+	end
+	if shouldStopHeadTracking() then
 		return
 	end
 	if not neck or not neck.Parent then
@@ -119,5 +141,12 @@ RunService.RenderStepped:Connect(function(dt)
 		local waistReturnSpeed = 8
 		local waistAlpha = 1 - math.exp(-(waistReturnSpeed * (dt or 0)))
 		waist.C0 = waist.C0:Lerp(baseWaistC0, waistAlpha)
+	end
+end)
+
+humanoid.Died:Connect(function()
+	if renderConn then
+		renderConn:Disconnect()
+		renderConn = nil
 	end
 end)

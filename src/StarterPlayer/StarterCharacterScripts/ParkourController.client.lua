@@ -37,6 +37,7 @@ local VerticalClimb = require(ReplicatedStorage.Movement.VerticalClimb)
 local LedgeHang = require(ReplicatedStorage.Movement.LedgeHang)
 local FX = require(ReplicatedStorage.Movement.FX)
 local Fly = require(ReplicatedStorage.Movement.Fly)
+local ParkourWeaponGate = require(ReplicatedStorage.Movement.ParkourWeaponGate)
 
 local function isBombTagModeActive()
 	local localPlayer = Players.LocalPlayer
@@ -1525,26 +1526,29 @@ UserInputService.InputBegan:Connect(function(input, gpe)
 	elseif input.KeyCode == Enum.KeyCode.C then
 		local character = getCharacter()
 		if character then
-			-- PRIORITY 1: LedgeHang release (highest priority)
-			if LedgeHang.isActive(character) then
-				LedgeHang.stop(character, true) -- true = manual release
-				return -- Don't process other C key functions
-			end
-
-			-- PRIORITY 2: Wallslide toggle/reactivation
-			if WallJump.isWallSliding and WallJump.isWallSliding(character) then
-				-- Currently wallsliding - toggle OFF
-				local success = WallJump.toggleWallslide(character)
-				return -- Don't process other C key functions
-			elseif WallJump.isWallslideDisabled and WallJump.isWallslideDisabled(character) then
-				-- Wallslide is disabled - try to reactivate manually during fall
-				local humanoid = character:FindFirstChildOfClass("Humanoid")
-				local isAirborne = humanoid and (humanoid.FloorMaterial == Enum.Material.Air)
-				if isAirborne then
-					local success = WallJump.tryManualReactivate(character)
-					return -- Only block other C key functions if we're airborne
+			local parkourWeaponRestricted = ParkourWeaponGate.isHoldingWeapon(character)
+			if not parkourWeaponRestricted then
+				-- PRIORITY 1: LedgeHang release (highest priority)
+				if LedgeHang.isActive(character) then
+					LedgeHang.stop(character, true) -- true = manual release
+					return -- Don't process other C key functions
 				end
-				-- If we're grounded, allow normal ground slide to continue
+
+				-- PRIORITY 2: Wallslide toggle/reactivation
+				if WallJump.isWallSliding and WallJump.isWallSliding(character) then
+					-- Currently wallsliding - toggle OFF
+					local success = WallJump.toggleWallslide(character)
+					return -- Don't process other C key functions
+				elseif WallJump.isWallslideDisabled and WallJump.isWallslideDisabled(character) then
+					-- Wallslide is disabled - try to reactivate manually during fall
+					local humanoid = character:FindFirstChildOfClass("Humanoid")
+					local isAirborne = humanoid and (humanoid.FloorMaterial == Enum.Material.Air)
+					if isAirborne then
+						local success = WallJump.tryManualReactivate(character)
+						return -- Only block other C key functions if we're airborne
+					end
+					-- If we're grounded, allow normal ground slide to continue
+				end
 			end
 
 			-- PRIORITY 3: Ground slide (existing functionality)
@@ -1593,6 +1597,12 @@ UserInputService.InputBegan:Connect(function(input, gpe)
 			end
 		end
 	elseif input.KeyCode == Enum.KeyCode.F then
+		if ParkourWeaponGate.isHoldingWeapon(character) then
+			if Fly.isActive(character) then
+				Fly.stop(character)
+			end
+			return
+		end
 		-- Fly only (zipline/climb stay on E)
 		if Fly.isActive(character) then
 			debugFlyPrint("[Fly] Stopping flight")
@@ -1635,6 +1645,9 @@ UserInputService.InputBegan:Connect(function(input, gpe)
 			end
 		end
 	elseif input.KeyCode == Enum.KeyCode.E then
+		if ParkourWeaponGate.isHoldingWeapon(character) then
+			return
+		end
 		local applyStam = shouldApplyStaminaCosts()
 		-- Zipline and climb (not fly — fly is F)
 		if Zipline.isActive(character) then
@@ -1676,6 +1689,9 @@ UserInputService.InputBegan:Connect(function(input, gpe)
 			end
 		end
 	elseif input.KeyCode == Enum.KeyCode.R then
+		if ParkourWeaponGate.isHoldingWeapon(character) then
+			return
+		end
 		-- Grapple/Hook toggle
 		local cam = workspace.CurrentCamera
 		if cam then
@@ -1708,9 +1724,10 @@ UserInputService.InputBegan:Connect(function(input, gpe)
 		end
 
 		local applyStam = shouldApplyStaminaCosts()
+		local parkourWeaponRestricted = ParkourWeaponGate.isHoldingWeapon(character)
 
 		-- Handle ledge hanging input FIRST (highest priority)
-		if LedgeHang.isActive(character) then
+		if not parkourWeaponRestricted and LedgeHang.isActive(character) then
 			-- Check for directional input combinations
 			local userInputService = game:GetService("UserInputService")
 			local wPressed = userInputService:IsKeyDown(Enum.KeyCode.W)
@@ -1814,7 +1831,7 @@ UserInputService.InputBegan:Connect(function(input, gpe)
 			state.slideEnd()
 			state.slideEnd = nil
 		end
-		if Zipline.isActive(character) then
+		if not parkourWeaponRestricted and Zipline.isActive(character) then
 			-- Jump off the zipline. Force a jump frame after detaching
 			Zipline.stop(character)
 			humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
@@ -1823,7 +1840,7 @@ UserInputService.InputBegan:Connect(function(input, gpe)
 					humanoid.Jump = true
 				end
 			end)
-		elseif Climb.isActive(character) then
+		elseif not parkourWeaponRestricted and Climb.isActive(character) then
 			if not applyStam or state.stamina.current >= Config.WallJumpStaminaCost then
 				if Climb.tryHop(character) then
 					if applyStam then
@@ -1831,7 +1848,7 @@ UserInputService.InputBegan:Connect(function(input, gpe)
 					end
 				end
 			end
-		elseif VerticalClimb.isActive(character) then
+		elseif not parkourWeaponRestricted and VerticalClimb.isActive(character) then
 			-- Handle wall jump during vertical climb - same logic as wall slide/run
 			if not applyStam or state.stamina.current >= Config.WallJumpStaminaCost then
 				-- Stop vertical climb first to prevent conflicts
@@ -1848,7 +1865,13 @@ UserInputService.InputBegan:Connect(function(input, gpe)
 					state._suppressAirControlUntil = os.clock() + (Config.WallJumpAirControlSuppressSeconds or 0.2)
 				end
 			end
-		elseif WallRun.isActive(character) or (WallJump.isWallSliding and WallJump.isWallSliding(character)) then
+		elseif
+			not parkourWeaponRestricted
+			and (
+				WallRun.isActive(character)
+				or (WallJump.isWallSliding and WallJump.isWallSliding(character))
+			)
+		then
 			-- Hop off the wall and stop sticking
 			if not applyStam or state.stamina.current >= Config.WallJumpStaminaCost then
 				local isWallSliding = WallJump.isWallSliding and WallJump.isWallSliding(character)
@@ -1886,17 +1909,19 @@ UserInputService.InputBegan:Connect(function(input, gpe)
 			local airborne = (humanoid.FloorMaterial == Enum.Material.Air)
 			if airborne then
 				-- Airborne: if near wall and can enter slide immediately, prefer starting slide first and block jump until pose snaps
-				if not applyStam or state.stamina.current >= Config.WallJumpStaminaCost then
-					if WallJump.isNearWall(character) then
-						-- isNearWall will start slide; rely on WallJump.tryJump to enforce animReady gating on next press
-						return
-					else
-						-- Use resetMomentum=true to ensure clean wall jump
-						if WallJump.tryJump(character, true) then
-							if applyStam then
-								state.stamina.current = math.max(0, state.stamina.current - Config.WallJumpStaminaCost)
-							end
+				if not parkourWeaponRestricted then
+					if not applyStam or state.stamina.current >= Config.WallJumpStaminaCost then
+						if WallJump.isNearWall(character) then
+							-- isNearWall will start slide; rely on WallJump.tryJump to enforce animReady gating on next press
 							return
+						else
+							-- Use resetMomentum=true to ensure clean wall jump
+							if WallJump.tryJump(character, true) then
+								if applyStam then
+									state.stamina.current = math.max(0, state.stamina.current - Config.WallJumpStaminaCost)
+								end
+								return
+							end
 						end
 					end
 				end
@@ -1969,7 +1994,7 @@ UserInputService.InputBegan:Connect(function(input, gpe)
 				end
 			end
 			-- OPTIMIZED: Bunny hop with flexible sprint requirement
-			if not airborne then
+			if not airborne and not parkourWeaponRestricted then
 				-- Check if bunny hop is allowed (with or without sprint based on config)
 				local canBunnyHop = true
 				if Config.BunnyHopRequireSprint ~= false then
@@ -2084,8 +2109,13 @@ RunService.RenderStepped:Connect(function(dt)
 	end
 	local speedMultiplier = bombHolderSpeedMult * getZombieSpeedMultiplier()
 
+	local parkourWeaponRestricted = ParkourWeaponGate.isHoldingWeapon(character)
+	if parkourWeaponRestricted then
+		ParkourWeaponGate.stopForbiddenParkour(character)
+	end
+
 	-- Maintain flying state if active (prevent other systems from interfering)
-	if Fly.isActive(character) then
+	if not parkourWeaponRestricted and Fly.isActive(character) then
 		-- Ensure humanoid stays in physics state
 		if humanoid:GetState() ~= Enum.HumanoidStateType.Physics then
 			humanoid:ChangeState(Enum.HumanoidStateType.Physics)
@@ -2416,12 +2446,14 @@ RunService.RenderStepped:Connect(function(dt)
 	-- Show climb prompt when near climbable and with enough stamina
 	if state.climbPromptValue then
 		local show = ""
-		if (not Zipline.isActive(character)) and Zipline.isNear(character) then
-			show = "Press E to Zipline"
-		else
-			local nearClimbable = (not Climb.isActive(character)) and Climb.isNearClimbable(character)
-			if nearClimbable and (not applyStamCosts or state.stamina.current >= Config.ClimbMinStamina) then
-				show = "Press E to Climb"
+		if not parkourWeaponRestricted then
+			if (not Zipline.isActive(character)) and Zipline.isNear(character) then
+				show = "Press E to Zipline"
+			else
+				local nearClimbable = (not Climb.isActive(character)) and Climb.isNearClimbable(character)
+				if nearClimbable and (not applyStamCosts or state.stamina.current >= Config.ClimbMinStamina) then
+					show = "Press E to Climb"
+				end
 			end
 		end
 		if show ~= "" then
@@ -2461,7 +2493,12 @@ RunService.RenderStepped:Connect(function(dt)
 	end
 
 	-- Vertical climb: sprinting straight into a wall grants a brief upward run
-	if humanoid.FloorMaterial == Enum.Material.Air and state.sprintHeld and state.stamina.isSprinting then
+	if
+		not parkourWeaponRestricted
+		and humanoid.FloorMaterial == Enum.Material.Air
+		and state.sprintHeld
+		and state.stamina.isSprinting
+	then
 		if VerticalClimb.isActive(character) then
 			-- Check if other abilities are active before maintaining vertical climb
 			local cs = ReplicatedStorage:FindFirstChild("ClientState")
@@ -2493,7 +2530,8 @@ RunService.RenderStepped:Connect(function(dt)
 
 	-- Wall run requires sprint, movement, stamina, airborne, and no climb. Do not break wall slide unless wallrun actually starts.
 	local wantWallRun = (
-		not Zipline.isActive(character)
+		not parkourWeaponRestricted
+		and not Zipline.isActive(character)
 		and state.sprintHeld
 		and state.stamina.isSprinting
 		and (humanoid.MoveDirection and humanoid.MoveDirection.Magnitude > 0)
@@ -2523,7 +2561,7 @@ RunService.RenderStepped:Connect(function(dt)
 	end
 
 	-- Maintain Ledge Hanging
-	if LedgeHang.isActive(character) then
+	if not parkourWeaponRestricted and LedgeHang.isActive(character) then
 		if applyStamCosts then
 			local drainRate = Config.LedgeHangStaminaDrainPerSecond or 5
 			state.stamina.current = math.max(0, state.stamina.current - drainRate * dt)
@@ -2542,7 +2580,13 @@ RunService.RenderStepped:Connect(function(dt)
 	local canAutoHang = not applyStamCosts or state.stamina.current >= (Config.LedgeHangMinStamina or 10)
 	local hasStaminaCooldown = state._staminaDepletedHangCooldown and os.clock() < state._staminaDepletedHangCooldown
 
-	if Config.LedgeTagAutoEnabled and not LedgeHang.isActive(character) and canAutoHang and not hasStaminaCooldown then
+	if
+		not parkourWeaponRestricted
+		and Config.LedgeTagAutoEnabled
+		and not LedgeHang.isActive(character)
+		and canAutoHang
+		and not hasStaminaCooldown
+	then
 		local root = character:FindFirstChild("HumanoidRootPart")
 		if root then
 			local range = Config.LedgeTagAutoHangRange or 3
@@ -2740,7 +2784,8 @@ RunService.RenderStepped:Connect(function(dt)
 
 	-- Maintain Wall Slide when airborne near walls (independent of sprint)
 	if
-		humanoid.FloorMaterial == Enum.Material.Air
+		not parkourWeaponRestricted
+		and humanoid.FloorMaterial == Enum.Material.Air
 		and not Zipline.isActive(character)
 		and not Climb.isActive(character)
 		and not LedgeHang.isActive(character)
@@ -2902,7 +2947,8 @@ RunService.RenderStepped:Connect(function(dt)
 			< (Config.MantleSuppressAfterClimbSeconds or 0.55)
 		-- Do not mantle during incompatible states
 		if
-			airborne
+			not parkourWeaponRestricted
+			and airborne
 			and movingAny
 			and not suppressMantleAfterClimb
 			and (not Zipline.isActive(character))
@@ -3028,7 +3074,7 @@ end)
 
 RunService.RenderStepped:Connect(function(dt)
 	local character = player.Character
-	if character then
+	if character and not ParkourWeaponGate.isHoldingWeapon(character) then
 		Grapple.update(character, dt)
 		-- (rope swing removed)
 	end

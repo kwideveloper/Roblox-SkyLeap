@@ -353,6 +353,37 @@ local function updateLimbAccessoriesVisibility(zoomedIn)
 	end
 end
 
+-- Sniper viewmodel (camera-local): hide default arms/hands so mesh hands do not cover the weapon.
+local function sniperViewModelHidingArms(): boolean
+	if not character then
+		return false
+	end
+	return character:GetAttribute("SkyLeapSniperViewModelActive") == true
+end
+
+local function isArmOrHandLimbPart(part: BasePart): boolean
+	if part:FindFirstAncestorOfClass("Accessory") ~= nil then
+		return false
+	end
+	local n = part.Name
+	return string.find(n, "Arm") ~= nil or string.find(n, "Hand") ~= nil
+end
+
+local function applySniperViewmodelArmSuppression()
+	if not character or not state.isShowingBody then
+		return
+	end
+	for _, part in ipairs(state.parts) do
+		if isArmOrHandLimbPart(part) then
+			if sniperViewModelHidingArms() then
+				part.LocalTransparencyModifier = 1
+			else
+				part.LocalTransparencyModifier = part.Transparency
+			end
+		end
+	end
+end
+
 local function ensurePartListeners(parts)
 	clearPartListeners()
 	for _, part in ipairs(parts) do
@@ -360,11 +391,17 @@ local function ensurePartListeners(parts)
 		-- Keep LocalTransparencyModifier equal to actual Transparency while visible
 		local c1 = part:GetPropertyChangedSignal("LocalTransparencyModifier"):Connect(function()
 			if state.isShowingBody then
+				if sniperViewModelHidingArms() and isArmOrHandLimbPart(part) then
+					return
+				end
 				part.LocalTransparencyModifier = part.Transparency
 			end
 		end)
 		local c2 = part:GetPropertyChangedSignal("Transparency"):Connect(function()
 			if state.isShowingBody then
+				if sniperViewModelHidingArms() and isArmOrHandLimbPart(part) then
+					return
+				end
 				part.LocalTransparencyModifier = part.Transparency
 			end
 		end)
@@ -380,7 +417,11 @@ local function setBodyVisible(visible)
 	state.isShowingBody = visible
 	for _, part in ipairs(state.parts) do
 		if visible then
-			part.LocalTransparencyModifier = part.Transparency
+			if sniperViewModelHidingArms() and isArmOrHandLimbPart(part) then
+				part.LocalTransparencyModifier = 1
+			else
+				part.LocalTransparencyModifier = part.Transparency
+			end
 		else
 			part.LocalTransparencyModifier = 0
 		end
@@ -422,7 +463,11 @@ local function onCharacterAdded(char)
 		if desc:IsA("BasePart") and desc.Name ~= "Head" then
 			table.insert(state.parts, desc)
 			if state.isShowingBody then
-				desc.LocalTransparencyModifier = desc.Transparency
+				if sniperViewModelHidingArms() and isArmOrHandLimbPart(desc) then
+					desc.LocalTransparencyModifier = 1
+				else
+					desc.LocalTransparencyModifier = desc.Transparency
+				end
 			end
 			ensurePartListeners(state.parts)
 		end
@@ -483,6 +528,7 @@ end
 RunService.RenderStepped:Connect(function()
 	local zoomedIn = isZoomedFullyIn()
 	setBodyVisible(zoomedIn)
+	applySniperViewmodelArmSuppression()
 	updateHeadVisibility(zoomedIn)
 	updateHeadAccessoriesVisibility(zoomedIn)
 	updateOtherAccessoriesVisibility(zoomedIn)
