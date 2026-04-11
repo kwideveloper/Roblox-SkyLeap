@@ -4,6 +4,8 @@ local RunService = game:GetService("RunService")
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
+local FpWeaponFallCamera = require(ReplicatedStorage.Movement.FpWeaponFallCamera)
+
 local player = Players.LocalPlayer
 local character = player.Character or player.CharacterAdded:Wait()
 local humanoid = character:WaitForChild("Humanoid", 30)
@@ -85,9 +87,11 @@ renderConn = RunService.RenderStepped:Connect(function(dt)
 		isLedgeHanging = hangFlag and hangFlag.Value == true
 	end)
 
+	local stabilizeFpWeaponFall = FpWeaponFallCamera.shouldStabilize(player, character, humanoid, root)
+
 	local yaw = 0
-	if isLedgeHanging then
-		-- Sliding on a ledge moves/animates the torso; camera-relative head IK reads as camera shake — hold neutral
+	if isLedgeHanging or stabilizeFpWeaponFall then
+		-- Ledge / FP+weapon+fall: torso motion + IK reads as camera shake — hold neutral head & waist
 		local settle = 1 - math.exp(-(14 * (dt or 0)))
 		neck.C0 = neck.C0:Lerp(baseC0, settle)
 	else
@@ -119,8 +123,8 @@ renderConn = RunService.RenderStepped:Connect(function(dt)
 	end
 
 	-- Torso/waist rotation when looking far to the sides/back
-	-- Skip torso rotation if ledge hanging, but allow head tracking
-	if waist and baseWaistC0 and not isLedgeHanging then
+	-- Skip torso rotation if ledge hanging or FP weapon fall stabilize, but allow head tracking
+	if waist and baseWaistC0 and not isLedgeHanging and not stabilizeFpWeaponFall then
 		local yawDeg = math.deg(math.abs(yaw))
 		local threshold = 50 -- start rotating torso after this yaw
 		if yawDeg > threshold then
@@ -136,8 +140,8 @@ renderConn = RunService.RenderStepped:Connect(function(dt)
 			local waistAlphaBack = 1 - math.exp(-(waistReturnSpeed * (dt or 0)))
 			waist.C0 = waist.C0:Lerp(baseWaistC0, waistAlphaBack)
 		end
-	elseif waist and baseWaistC0 and isLedgeHanging then
-		-- During ledge hang, keep torso in neutral position
+	elseif waist and baseWaistC0 and (isLedgeHanging or stabilizeFpWeaponFall) then
+		-- During ledge hang / stabilized ADS fall, keep torso in neutral position
 		local waistReturnSpeed = 8
 		local waistAlpha = 1 - math.exp(-(waistReturnSpeed * (dt or 0)))
 		waist.C0 = waist.C0:Lerp(baseWaistC0, waistAlpha)

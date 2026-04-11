@@ -1,5 +1,5 @@
 -- True when the local player should not use full parkour (any Tool on character, or virtual sniper slot active).
--- Allowed with weapon: vault, double jump, dash, ground slide — see ParkourController gating.
+-- Allowed with weapon: vault, double jump, dash, ground slide, bunny hop — see ParkourController gating.
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 

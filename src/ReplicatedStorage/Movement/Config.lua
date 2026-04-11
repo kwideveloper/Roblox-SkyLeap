@@ -129,6 +129,18 @@ Config.CameraShakeAmplitudeMaxDeg = 1.0
 Config.CameraShakeFrequencyHz = 7.0
 Config.CameraShakeSprintMultiplier = 1.5
 Config.CameraShakeAirborneMultiplier = 0.8
+-- First-person strafe tilt: camera roll opposite to lateral movement (move left → tilt right). Only when camera is first person (same rule as sniper FP gate when available).
+Config.CameraStrafeTiltEnabled = true
+-- Config.CameraStrafeTiltMaxDegrees = 2.8
+Config.CameraStrafeTiltMaxDegrees = 1.8
+Config.CameraStrafeTiltLerpPerSecond = 12
+Config.CameraStrafeTiltMoveDeadzone = 0.06 -- Humanoid.MoveDirection magnitude below this yields no tilt
+-- First person + weapon + falling: disable procedural fall camera shake and head IK wobble (stable ADS-style view).
+Config.CameraStabilizeFpWeaponFallEnabled = true
+-- HRP velocity Y must be below this (negative = falling) to count as “cayendo”.
+Config.CameraStabilizeFpWeaponFallVyThreshold = -1
+-- While stabilized, also zero strafe-roll tilt so the view stays level.
+Config.CameraStabilizeFpWeaponFallDisableStrafeTilt = true
 -- Speed wind FX
 Config.SpeedWindEnabled = true
 Config.SpeedWindMinSpeed = 24 --24

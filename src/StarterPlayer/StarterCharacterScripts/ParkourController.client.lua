@@ -266,6 +266,9 @@ local state = {
 	styleCommitFlashValue = nil,
 	styleCommitAmountValue = nil,
 	pendingPadTick = nil,
+	-- Sniper air down-boost: client-side slow fall (local sim owns HRP; server clamp was unreliable).
+	padSlowFallUntil = nil,
+	padSlowFallMaxDown = nil,
 	wallAttachLockedUntil = nil,
 	_airDashResetDone = false,
 	doubleJumpCharges = 0,
@@ -1443,6 +1446,8 @@ if player.Character then
 	setupCharacter(player.Character)
 end
 player.CharacterAdded:Connect(function()
+	state.padSlowFallUntil = nil
+	state.padSlowFallMaxDown = nil
 	-- Reset style session state hard on respawn to avoid zero-point commit visuals
 	state.style = Style.create()
 	if state.styleScoreValue then
@@ -1993,8 +1998,8 @@ UserInputService.InputBegan:Connect(function(input, gpe)
 					end
 				end
 			end
-			-- OPTIMIZED: Bunny hop with flexible sprint requirement
-			if not airborne and not parkourWeaponRestricted then
+			-- OPTIMIZED: Bunny hop with flexible sprint requirement (allowed while holding a weapon; other parkour stays gated)
+			if not airborne then
 				-- Check if bunny hop is allowed (with or without sprint based on config)
 				local canBunnyHop = true
 				if Config.BunnyHopRequireSprint ~= false then
@@ -3257,7 +3262,7 @@ do
 end
 
 -- Pad trigger from server; do NOT bump combo immediately. Only make it eligible for chaining.
-PadTriggered.OnClientEvent:Connect(function(newVel)
+PadTriggered.OnClientEvent:Connect(function(newVel, opts)
 	-- Client-side application to ensure impulse even if Touched misses a frame
 	local character = player.Character
 	local root = character and character:FindFirstChild("HumanoidRootPart")
@@ -3268,13 +3273,70 @@ PadTriggered.OnClientEvent:Connect(function(newVel)
 				humanoid:ChangeState(Enum.HumanoidStateType.Freefall)
 			end)
 		end
+		-- Wipe parkour momentum so launch pads / sniper down-boost do not keep old speed chain.
+		if state.momentum then
+			state.momentum.value = 0
+		end
+		if state.momentumValue then
+			state.momentumValue.Value = 0
+		end
+		if character then
+			pcall(function()
+				BunnyHop.resetStacks(character)
+			end)
+		end
 		pcall(function()
 			root.CFrame = root.CFrame + Vector3.new(0, 0.05, 0)
 		end)
 		root.AssemblyLinearVelocity = newVel
+		if typeof(opts) == "table" then
+			local sec = opts.slowFallSeconds
+			local maxDn = opts.slowFallMaxDown
+			if type(sec) == "number" and sec > 0 and type(maxDn) == "number" and maxDn > 0 then
+				state.padSlowFallUntil = os.clock() + sec
+				state.padSlowFallMaxDown = maxDn
+			end
+		end
 	end
 	-- Mark as eligible for chaining
 	state.pendingPadTick = os.clock()
+end)
+
+-- After physics: cap downward Y for sniper pad slow-fall (local HRP authority).
+RunService.Heartbeat:Connect(function()
+	local untilT = state.padSlowFallUntil
+	local maxDown = state.padSlowFallMaxDown
+	if not untilT or not maxDown then
+		return
+	end
+	local now = os.clock()
+	if now >= untilT then
+		state.padSlowFallUntil = nil
+		state.padSlowFallMaxDown = nil
+		return
+	end
+	local character = player.Character
+	if not character or Fly.isActive(character) then
+		return
+	end
+	local hum = character:FindFirstChildOfClass("Humanoid")
+	local root = character:FindFirstChild("HumanoidRootPart")
+	if not hum or not root or not root:IsA("BasePart") then
+		return
+	end
+	local v = root.AssemblyLinearVelocity
+	-- Avoid clearing on FloorMaterial flicker: only treat as landed when touching ground and not still dropping fast.
+	if hum.FloorMaterial ~= Enum.Material.Air and v.Y > -12 then
+		state.padSlowFallUntil = nil
+		state.padSlowFallMaxDown = nil
+		return
+	end
+	if hum.FloorMaterial ~= Enum.Material.Air then
+		return
+	end
+	if v.Y < -maxDown then
+		root.AssemblyLinearVelocity = Vector3.new(v.X, -maxDown, v.Z)
+	end
 end)
 
 -- Apply climb and fly velocities before physics integrates gravity

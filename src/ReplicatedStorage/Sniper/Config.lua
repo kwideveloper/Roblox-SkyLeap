@@ -127,16 +127,64 @@ return {
 	SniperHideRobloxDefaultBackpack = true,
 	-- Lock camera to first person while the sniper slot is selected (virtual loadout).
 	SniperForceFirstPersonWhileSniperActive = true,
-	-- Server: hitscan origin must be near the character Head (client sends camera / viewport origin).
-	SniperMaxFireOriginFromHeadStuds = 22,
+	-- Server: viewport/camera origin must stay within this distance of Head (anti-cheat). FP camera is usually <6; keep margin for rigs.
+	SniperMaxFireOriginFromHeadStuds = 48,
+	-- If true (recommended), hitscan uses the same ray as the crosshair: ViewportPointToRay origin + direction from the client (no head/barrel re-origin; fixes drift while moving/falling).
+	-- If false, uses SniperHitscanRayFromHead / barrel logic below (can miss the reticle when the body moves between client frame and server).
+	SniperHitscanUseViewportRayOrigin = true,
+	-- Optional: move start slightly along aim from viewport origin (studs). 0 = use exact camera ray origin.
+	SniperHitscanViewportOriginAlongDirStuds = 0,
+	-- Legacy when SniperHitscanUseViewportRayOrigin = false: ray from Head + direction * offset.
+	SniperHitscanRayFromHead = true,
+	SniperHitscanHeadForwardOffset = 0.35,
 	-- Fallback when the Tool is only in Backpack and the viewmodel has no CasingEject part: spawn in camera space.
 	SniperCasingEjectCameraCFrame = CFrame.new(0.14, -0.12, -0.55),
 
 	-- Time after each shot before another shot is accepted (seconds)
-	ReloadSeconds = 2.5,
+	ReloadSeconds = 1.2,
+
+	-- Server: while airborne with sniper, a hitscan-only plate sits under the player’s feet (Workspace). Shooting down hits it first → upward boost (works in jump; no angle math on client).
+	SniperAirDownBoostEnabled = true,
+	-- If true: only one down-boost per jump; after use the probe stays parked until you land (next shots raycast through like normal).
+	SniperAirDownBoostOncePerAir = true,
+	-- Launch-pad style: set vertical speed (studs/s), wipe fall / lateral momentum by default (see flags below).
+	-- Upward launch from down-shot (studs/s).
+	SniperAirDownBoostUpSpeed = 165,
+	-- If true: new velocity is (0, upSpeed, 0) — no BodyVelocity; same idea as LaunchPad wipe + strong Y.
+	SniperAirDownBoostZeroHorizontalVelocity = true,
+	-- When ZeroHorizontal is false: scale kept XZ by this (0..1). Ignored when zero-horizontal is true.
+	SniperAirDownBoostCarryHorizontal = 0,
+	-- Optional ceiling on |Y| after boost (nil = no cap).
+	SniperAirDownBoostMaxUpSpeed = nil,
+	SniperAirDownBoostProbeSizeX = 9,
+	SniperAirDownBoostProbeSizeZ = 9,
+	SniperAirDownBoostProbeThickness = 0.35,
+	-- Plate center = HumanoidRootPart.Position - Vector3.new(0, this, 0). Tune if your rig’s feet differ (R15 often ~3.2–4).
+	SniperAirDownBoostProbeCenterBelowHrp = 3.6,
+	-- First-person viewport ray starts ahead of the HRP; it often misses the feet plate while “shooting down” for boost. Extra world-down ray from root when aim is mostly downward (does not run if the main ray hit a Humanoid).
+	SniperAirDownBoostFeetStompEnabled = true,
+	-- Require dot(aim, worldDown) >= this. 0.65 ≈ 49° below horizontal; 0.75 ≈ 41°.
+	SniperAirDownBoostFeetStompMinDownDot = 0.68,
+	-- Down cast length from root (studs). nil = probe vertical offset + margin.
+	SniperAirDownBoostFeetStompRayStuds = nil,
+	-- After a successful air down-boost: while airborne, cap downward speed (studs/s) for this many seconds — softer fall. 0 = off.
+	SniperAirDownBoostSlowFallSeconds = 2.8,
+	-- Max downward |Y| speed during slow-fall (higher = falls a bit faster after boost). Typical terminal is faster; ~46 was floaty.
+	SniperAirDownBoostSlowFallMaxDownStudsPerSec = 66,
 
 	-- Hitscan ray length (studs) - Default: 2000
 	MaxRange = 2000000,
+
+	-- Server: bullet hole decal on world geometry when the shot hits a surface (not players / NPC Humanoids / Enemy-tagged targets).
+	SniperBulletHoleEnabled = true,
+	-- Image id only (e.g. 4804824547) or full "rbxassetid://4804824547"
+	SniperBulletHoleTextureId = 4804824547,
+	-- Seconds before the hole part is destroyed; 0 = permanent (no Debris cleanup).
+	SniperBulletHoleLifetimeSeconds = 0,
+	-- Flat part X/Y size in studs (depth is thin).
+	SniperBulletHoleSizeStuds = 0.38,
+	-- Push the decal part slightly along the surface normal to reduce z-fighting.
+	SniperBulletHoleNormalOffsetStuds = 0.045,
 
 	-- Hitscan streak (client): invisible point moves very fast; only Trail draws the line. False = legacy Beam.
 	SniperProjectileTrailEnabled = true,

@@ -11,6 +11,15 @@ if Config.CameraDynamicsEnabled == false then
 	return
 end
 
+local FpWeaponFallCamera = require(ReplicatedStorage.Movement.FpWeaponFallCamera)
+
+local SniperFirstPersonGate = (function()
+	local ok, m = pcall(function()
+		return require(ReplicatedStorage:WaitForChild("Sniper"):WaitForChild("SniperFirstPersonGate"))
+	end)
+	return ok and m or nil
+end)()
+
 local player = Players.LocalPlayer
 local camera = workspace.CurrentCamera
 local terrain = workspace:FindFirstChildOfClass("Terrain")
@@ -34,6 +43,7 @@ local state = {
 	shakeAirMul = Config.CameraShakeAirborneMultiplier or 0.8,
 	windEnabled = Config.SpeedWindEnabled ~= false,
 	noiseT = 0,
+	strafeTiltRoll = 0,
 }
 
 -- Wind Lines System (based on Dylian1235's approach with Trails)
@@ -282,6 +292,22 @@ local function getClientSpeed()
 	return (v and v.Value) or nil
 end
 
+local function isFirstPersonForStrafeTilt(): boolean
+	if SniperFirstPersonGate and SniperFirstPersonGate.isCameraCloseForFirstPerson then
+		return SniperFirstPersonGate.isCameraCloseForFirstPerson(player) == true
+	end
+	if player.CameraMode == Enum.CameraMode.LockFirstPerson then
+		return true
+	end
+	local cam = workspace.CurrentCamera
+	if not cam then
+		return false
+	end
+	local distance = (cam.Focus.Position - cam.CFrame.Position).Magnitude
+	local strict = (player.CameraMinZoomDistance or 0.5) + 0.15
+	return distance <= strict
+end
+
 local function cleanupWindLines()
 	for _, windLine in ipairs(windLines) do
 		if windLine.attachment0 and windLine.attachment0.Parent then
@@ -306,6 +332,7 @@ local function setup()
 	-- Reset on respawn
 	Players.LocalPlayer.CharacterAdded:Connect(function()
 		state.character, state.humanoid, state.root = getCharacter()
+		state.strafeTiltRoll = 0
 		-- Clean up old wind lines
 		cleanupWindLines()
 		if camera then
@@ -342,6 +369,7 @@ local function setup()
 		local isSprinting = (cs:FindFirstChild("IsSprinting") and cs.IsSprinting.Value) or false
 		-- Ledge hang uses Physics/Air; do not treat as airborne for shake/wind
 		local airborne = (not isLedgeHanging) and (state.humanoid.FloorMaterial == Enum.Material.Air)
+		local fpWeaponFallStable = FpWeaponFallCamera.shouldStabilize(player, state.character, state.humanoid, state.root)
 		local momentum = getClientMomentum()
 
 		-- FOV cap: allow high speeds (hooks/pads) to exceed base max by extraFromSpeed
@@ -390,20 +418,58 @@ local function setup()
 			camera.FieldOfView = smoothed
 		end
 
-		-- Subtle procedural shake only while falling downward
-		if Config.CameraShakeEnabled ~= false then
-			if airborne and vy < -0.5 then
-				state.noiseT = state.noiseT + dt * (state.shakeFreq or 7)
-				local n1 = noise1(state.noiseT)
-				local n2 = noise1(state.noiseT * 0.7 + 1.234)
-				local n3 = noise1(state.noiseT * 1.3 + 2.468)
-				local ampBase = lerp(state.shakeAmpMin, state.shakeAmpMax, mixFrac)
-				local pitch = math.rad(ampBase * n1)
-				local yaw = math.rad(ampBase * n2 * 0.5)
-				local roll = math.rad(ampBase * n3 * 0.7)
-				local cf = camera.CFrame
-				camera.CFrame = cf * CFrame.Angles(pitch, yaw, roll)
+		-- First-person strafe tilt (roll opposite to lateral move: strafe left → positive roll / lean right)
+		local tiltTargetRad = 0
+		if
+			Config.CameraStrafeTiltEnabled ~= false
+			and isFirstPersonForStrafeTilt()
+			and not isLedgeHanging
+			and not (fpWeaponFallStable and Config.CameraStabilizeFpWeaponFallDisableStrafeTilt ~= false)
+		then
+			local move = state.humanoid.MoveDirection
+			local flat = Vector3.new(move.X, 0, move.Z)
+			local dz = Config.CameraStrafeTiltMoveDeadzone or 0.06
+			if flat.Magnitude > dz then
+				flat = flat.Unit
+				local r = state.root.CFrame.RightVector
+				local rightFlat = Vector3.new(r.X, 0, r.Z)
+				if rightFlat.Magnitude > 0.05 then
+					rightFlat = rightFlat.Unit
+					local strafeSigned = math.clamp(flat:Dot(rightFlat), -1, 1)
+					local maxRad = math.rad(Config.CameraStrafeTiltMaxDegrees or 2.8)
+					tiltTargetRad = -strafeSigned * maxRad
+				end
 			end
+		end
+		local tiltRate = math.max(0.01, Config.CameraStrafeTiltLerpPerSecond or 12)
+		state.strafeTiltRoll = smoothTowards(state.strafeTiltRoll, tiltTargetRad, tiltRate, dt)
+
+		local pitchShake, yawShake, rollShake = 0, 0, 0
+		if
+			Config.CameraShakeEnabled ~= false
+			and airborne
+			and vy < -0.5
+			and not fpWeaponFallStable
+		then
+			state.noiseT = state.noiseT + dt * (state.shakeFreq or 7)
+			local n1 = noise1(state.noiseT)
+			local n2 = noise1(state.noiseT * 0.7 + 1.234)
+			local n3 = noise1(state.noiseT * 1.3 + 2.468)
+			local ampBase = lerp(state.shakeAmpMin, state.shakeAmpMax, mixFrac)
+			pitchShake = math.rad(ampBase * n1)
+			yawShake = math.rad(ampBase * n2 * 0.5)
+			rollShake = math.rad(ampBase * n3 * 0.7)
+		end
+
+		local hasTilt = math.abs(state.strafeTiltRoll) > 1e-5
+		local hasShake = (pitchShake ~= 0 or yawShake ~= 0 or rollShake ~= 0)
+		if hasTilt or hasShake then
+			local base = camera.CFrame
+			local cf = base * CFrame.Angles(0, 0, state.strafeTiltRoll)
+			if hasShake then
+				cf = cf * CFrame.Angles(pitchShake, yawShake, rollShake)
+			end
+			camera.CFrame = cf
 		end
 
 		-- Wind feedback when fast

@@ -387,7 +387,27 @@ local function bindTool(tool: Tool, options: { LocalPlayer: Player })
 		end
 		direction = direction.Unit
 
-		-- Hitscan origin: FireOriginPartName on viewmodel, else Tool part, else camera (virtual only).
+		-- Hitscan: same line as crosshair when viewport mode (Config). Legacy mode uses barrel below.
+		local hitscanOrigin: Vector3
+		if Config.SniperHitscanUseViewportRayOrigin ~= false then
+			hitscanOrigin = ray.Origin + direction * (Config.SniperHitscanViewportOriginAlongDirStuds or 0)
+		else
+			local fireOriginCfLegacy: CFrame? = nil
+			if Config.SniperViewModelEnabled then
+				fireOriginCfLegacy = ViewModelClient.getViewModelPartWorldCFrame(tool, Config.FireOriginPartName or "Barrel")
+			end
+			if not fireOriginCfLegacy and barrel then
+				fireOriginCfLegacy = barrel.CFrame
+			end
+			if fireOriginCfLegacy then
+				hitscanOrigin = fireOriginCfLegacy.Position
+			elseif Config.SniperVirtualInventoryEnabled then
+				hitscanOrigin = ray.Origin
+			else
+				return
+			end
+		end
+
 		local fireOriginCf: CFrame? = nil
 		if Config.SniperViewModelEnabled then
 			fireOriginCf = ViewModelClient.getViewModelPartWorldCFrame(tool, Config.FireOriginPartName or "Barrel")
@@ -396,17 +416,8 @@ local function bindTool(tool: Tool, options: { LocalPlayer: Player })
 			fireOriginCf = barrel.CFrame
 		end
 
-		local origin: Vector3
-		if fireOriginCf then
-			origin = fireOriginCf.Position
-		elseif Config.SniperVirtualInventoryEnabled then
-			origin = ray.Origin
-		else
-			return
-		end
-
-		local endPos = raycastPreview(origin, direction, character)
-		SniperShotVisualizer.play(origin, endPos)
+		local endPos = raycastPreview(hitscanOrigin, direction, character)
+		SniperShotVisualizer.play(hitscanOrigin, endPos)
 
 		-- Smoke only at SniperMuzzleSmokePartName ("Muzzle" by default), not at the bore.
 		local smokePartName = Config.SniperMuzzleSmokePartName or "Muzzle"
@@ -460,7 +471,7 @@ local function bindTool(tool: Tool, options: { LocalPlayer: Player })
 		end
 
 		reloadEndsAt = now + Config.ReloadSeconds
-		remotes.RequestFire:FireServer(origin, direction)
+		remotes.RequestFire:FireServer(hitscanOrigin, direction)
 	end
 
 	if Config.SniperVirtualInventoryEnabled then
