@@ -5,9 +5,49 @@ local Debris = game:GetService("Debris")
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
+local ServerScriptService = game:GetService("ServerScriptService")
 local Workspace = game:GetService("Workspace")
 
 local Config = require(ReplicatedStorage:WaitForChild("Sniper"):WaitForChild("Config"))
+local SniperWeaponPartResolve = require(ReplicatedStorage:WaitForChild("Sniper"):WaitForChild("SniperWeaponPartResolve"))
+
+local function sniperDebug(fmt: string, ...: any)
+	if Config.SniperDebugApplyHit ~= true then
+		return
+	end
+	print("[SniperDebug] " .. string.format(fmt, ...))
+end
+
+local function sniperDebugFireReject(player: Player, reason: string)
+	sniperDebug("requestFire rejected: %s (player=%s)", reason, player.Name)
+end
+
+-- CharacterAutoLoads is standard on Player but can be missing in some Studio/engine builds; never block the kill path.
+local function readCharacterAutoLoads(player: Player): boolean?
+	local ok, v = pcall(function()
+		return (player :: any).CharacterAutoLoads
+	end)
+	if ok and type(v) == "boolean" then
+		return v
+	end
+	return nil
+end
+
+local function writeCharacterAutoLoads(player: Player, value: boolean)
+	pcall(function()
+		(player :: any).CharacterAutoLoads = value
+	end)
+end
+
+local DeathSpectateServer: any = nil
+do
+	local ok, mod = pcall(function()
+		return require(ServerScriptService:WaitForChild("DeathSpectate"):WaitForChild("DeathSpectateServer"))
+	end)
+	if ok then
+		DeathSpectateServer = mod
+	end
+end
 
 local remotesFolder = ReplicatedStorage:WaitForChild("Remotes")
 local requestFire = remotesFolder:WaitForChild("SniperRequestFire")
@@ -16,6 +56,8 @@ local audioFeedback = remotesFolder:WaitForChild("SniperAudioFeedback")
 local padTriggered = remotesFolder:WaitForChild("PadTriggered")
 
 local lastShotClock: { [Player]: number } = {}
+-- Snapshot CharacterAutoLoads before sniper forces it off (must restore if DeathSpectate skips or fails).
+local sniperPreKillCharAutoLoads: { [Player]: boolean } = {}
 local airBoostProbeByPlayer: { [Player]: BasePart } = {}
 -- After a successful air down-boost, true until Humanoid touches ground (one boost per airborne stint).
 local airDownBoostConsumedUntilGround: { [Player]: boolean } = {}
@@ -158,6 +200,9 @@ end
 local function destroyEnemyRoot(root: Instance)
 	if root:IsA("Model") then
 		local humanoid = root:FindFirstChildOfClass("Humanoid")
+		if not humanoid and CollectionService:HasTag(root, ENEMY_TAG) then
+			humanoid = root:FindFirstChildWhichIsA("Humanoid", true)
+		end
 		if humanoid then
 			if humanoid.Health > 0 then
 				humanoid.Health = 0
@@ -172,26 +217,108 @@ local function destroyEnemyRoot(root: Instance)
 	end
 end
 
+-- Player: hit part under Character OR assembly root under Character (welded proxy parts often are not descendants of Character).
+-- NPC: direct Humanoid on an ancestor Model, OR Enemy-tagged model with nested Humanoid (never whole-map recursive).
+local function resolveTargetHumanoid(hitPart: BasePart): (Humanoid?, Model?)
+	local asmRoot = hitPart:GetRootPart() or hitPart
+	for _, plr in Players:GetPlayers() do
+		local ch = plr.Character
+		if ch and ch:IsA("Model") then
+			if hitPart:IsDescendantOf(ch) or asmRoot:IsDescendantOf(ch) then
+				local hum = ch:FindFirstChildOfClass("Humanoid")
+				if not hum then
+					hum = ch:FindFirstChildWhichIsA("Humanoid", true)
+				end
+				if hum and hum:IsA("Humanoid") then
+					return hum, ch
+				end
+			end
+		end
+	end
+	local inst: Instance? = hitPart
+	while inst do
+		if inst:IsA("Model") then
+			local m = inst :: Model
+			if not Players:GetPlayerFromCharacter(m) then
+				local hum = m:FindFirstChildOfClass("Humanoid")
+				if not hum and CollectionService:HasTag(m, ENEMY_TAG) then
+					hum = m:FindFirstChildWhichIsA("Humanoid", true)
+				end
+				if hum and hum:IsA("Humanoid") then
+					return hum, m
+				end
+			end
+		end
+		inst = inst.Parent
+	end
+	return nil, nil
+end
+
 -- Returns: hitKind ("player" | "npc" | "enemy"), victimPlayer (if a Roblox player died)
 local function isCharacterModelPart(hitPart: BasePart): boolean
-	local model = hitPart:FindFirstAncestorOfClass("Model")
-	return model ~= nil and model:FindFirstChildOfClass("Humanoid") ~= nil
+	local hum = resolveTargetHumanoid(hitPart)
+	return hum ~= nil
 end
 
 local function applyHit(shooter: Player, hitPart: BasePart): (string?, Player?)
-	local model = hitPart:FindFirstAncestorOfClass("Model")
-	if model then
-		local humanoid = model:FindFirstChildOfClass("Humanoid")
-		if humanoid and humanoid.Health > 0 then
-			local victim = Players:GetPlayerFromCharacter(model)
-			if victim == shooter then
-				return nil, nil
+	local humanoid, model = resolveTargetHumanoid(hitPart)
+	if humanoid and model and humanoid.Health > 0 then
+		local victim = Players:GetPlayerFromCharacter(model)
+		sniperDebug(
+			"applyHit: part=%s asmRoot=%s hum=%s health=%.3f victim=%s self=%s",
+			hitPart:GetFullName(),
+			(hitPart:GetRootPart() and hitPart:GetRootPart():GetFullName()) or "?",
+			humanoid:GetFullName(),
+			humanoid.Health,
+			victim and victim.Name or "nil",
+			shooter.Name
+		)
+		if victim == shooter then
+			sniperDebug("applyHit: blocked (self)")
+			return nil, nil
+		end
+		-- Remove spawn shields (ForceField may not be a direct child of the character model).
+		for _, d in model:GetDescendants() do
+			if d:IsA("ForceField") then
+				d:Destroy()
 			end
+		end
+		-- Snapshot autoload before lethal; set false only *after* Health hits 0 so the engine always applies the kill.
+		local preAutoLoads: boolean? = nil
+		if victim then
+			preAutoLoads = readCharacterAutoLoads(victim)
+		end
+		-- Some NPC / legacy rigs expose Humanoid without CanBeDamaged; never let this line abort the kill.
+		pcall(function()
+			(humanoid :: any).CanBeDamaged = true
+		end)
+		humanoid.Health = 0
+		if humanoid.Health > 0 then
 			humanoid.Health = 0
-			if victim then
-				return "player", victim
-			end
-			return "npc", nil
+		end
+		if victim then
+			sniperPreKillCharAutoLoads[victim] = preAutoLoads
+			writeCharacterAutoLoads(victim, false)
+		end
+		if victim then
+			return "player", victim
+		end
+		if model and CollectionService:HasTag(model, ENEMY_TAG) then
+			sniperDebug("applyHit: result enemy tag path")
+			return "enemy", nil
+		end
+		sniperDebug("applyHit: result npc (no player victim)")
+		return "npc", nil
+	end
+
+	if Config.SniperDebugApplyHit == true then
+		local ar = hitPart:GetRootPart()
+		if humanoid == nil then
+			sniperDebug("applyHit: no humanoid part=%s asmRoot=%s", hitPart:GetFullName(), ar and ar:GetFullName() or "nil")
+		elseif humanoid.Health <= 0 then
+			sniperDebug("applyHit: humanoid dead hum=%s health=%.3f", humanoid:GetFullName(), humanoid.Health)
+		elseif not model then
+			sniperDebug("applyHit: no model hum=%s", humanoid:GetFullName())
 		end
 	end
 
@@ -285,32 +412,38 @@ end
 
 requestFire.OnServerEvent:Connect(function(player: Player, claimedOrigin: Vector3, claimedDirection: Vector3)
 	if typeof(claimedOrigin) ~= "Vector3" or typeof(claimedDirection) ~= "Vector3" then
+		sniperDebugFireReject(player, "bad origin/dir types")
 		return
 	end
 
 	local character = player.Character
 	if not character then
+		sniperDebugFireReject(player, "no character")
 		return
 	end
 
 	local tool = getSniperToolForFire(player)
 	if not tool then
+		sniperDebugFireReject(player, "no sniper tool")
 		return
 	end
 
 	local now = os.clock()
 	local last = lastShotClock[player]
 	if last and (now - last) < Config.ReloadSeconds then
+		sniperDebugFireReject(player, "cooldown")
 		return
 	end
 
 	local dir = normalizeDirection(claimedDirection)
 	if not dir then
+		sniperDebugFireReject(player, "zero direction")
 		return
 	end
 
 	local head = character:FindFirstChild("Head")
 	if not head or not head:IsA("BasePart") then
+		sniperDebugFireReject(player, "no Head")
 		return
 	end
 
@@ -323,13 +456,23 @@ requestFire.OnServerEvent:Connect(function(player: Player, claimedOrigin: Vector
 	local origin: Vector3
 
 	if useViewportRay then
-		if (claimedOrigin - headPart.Position).Magnitude > Config.SniperMaxFireOriginFromHeadStuds then
+		local maxOrig = Config.SniperMaxFireOriginFromHeadStuds or 72
+		local distHead = (claimedOrigin - headPart.Position).Magnitude
+		local hrp = character:FindFirstChild("HumanoidRootPart")
+		local distHrp = math.huge
+		if hrp and hrp:IsA("BasePart") then
+			distHrp = (claimedOrigin - hrp.Position).Magnitude
+		end
+		-- Camera ray can sit closer to HRP than Head in FP; allow either anchor.
+		if distHead > maxOrig and distHrp > maxOrig + 14 then
+			sniperDebugFireReject(player, string.format("claimed origin too far from head/hrp (dh=%.1f dr=%.1f max=%.1f)", distHead, distHrp, maxOrig))
 			return
 		end
 		if not useClaimedOrigin then
 			local barrelName = Config.FireOriginPartName
 			local barrel = tool:FindFirstChild(barrelName)
 			if not barrel or not barrel:IsA("BasePart") then
+				sniperDebugFireReject(player, "no barrel part " .. tostring(barrelName))
 				return
 			end
 			if Config.UseMuzzleDirectionCheck then
@@ -337,26 +480,39 @@ requestFire.OnServerEvent:Connect(function(player: Player, claimedOrigin: Vector
 				local dot = math.clamp(barrelLook:Dot(dir), -1, 1)
 				local deg = math.deg(math.acos(dot))
 				if deg > Config.MaxAimVsMuzzleDegrees then
+					sniperDebugFireReject(player, string.format("muzzle vs aim deg=%.1f max=%.1f", deg, Config.MaxAimVsMuzzleDegrees))
 					return
 				end
 			end
 		end
+		-- Client sends world position of FireOriginPartName (viewmodel Barrel when virtual inventory / FP).
 		origin = claimedOrigin
 	else
 		local rayFromHead = Config.SniperHitscanRayFromHead ~= false
 		local forwardNudge = Config.SniperHitscanHeadForwardOffset or 0.35
 
 		if useClaimedOrigin then
-			if (claimedOrigin - headPart.Position).Magnitude > Config.SniperMaxFireOriginFromHeadStuds then
+			local maxOrig2 = Config.SniperMaxFireOriginFromHeadStuds or 72
+			local dH = (claimedOrigin - headPart.Position).Magnitude
+			local hrp2 = character:FindFirstChild("HumanoidRootPart")
+			local dR = math.huge
+			if hrp2 and hrp2:IsA("BasePart") then
+				dR = (claimedOrigin - hrp2.Position).Magnitude
+			end
+			if dH > maxOrig2 and dR > maxOrig2 + 14 then
+				sniperDebugFireReject(player, string.format("claimed origin too far (head ray) dh=%.1f dr=%.1f max=%.1f", dH, dR, maxOrig2))
 				return
 			end
 		else
 			local barrelName = Config.FireOriginPartName
-			local barrel = tool:FindFirstChild(barrelName)
-			if not barrel or not barrel:IsA("BasePart") then
+			local barrel = SniperWeaponPartResolve.findFirstBasePartNamed(tool, barrelName)
+			if not barrel then
+				sniperDebugFireReject(player, "no barrel part " .. tostring(barrelName) .. " (head ray)")
 				return
 			end
-			if (barrel.Position - claimedOrigin).Magnitude > Config.MaxOriginDriftStuds then
+			local drift = (barrel.Position - claimedOrigin).Magnitude
+			if drift > Config.MaxOriginDriftStuds then
+				sniperDebugFireReject(player, string.format("origin drift %.1f > max %.1f", drift, Config.MaxOriginDriftStuds))
 				return
 			end
 			if Config.UseMuzzleDirectionCheck then
@@ -364,6 +520,7 @@ requestFire.OnServerEvent:Connect(function(player: Player, claimedOrigin: Vector
 				local dot = math.clamp(barrelLook:Dot(dir), -1, 1)
 				local deg = math.deg(math.acos(dot))
 				if deg > Config.MaxAimVsMuzzleDegrees then
+					sniperDebugFireReject(player, string.format("muzzle vs aim (head ray) deg=%.1f", deg))
 					return
 				end
 			end
@@ -376,8 +533,9 @@ requestFire.OnServerEvent:Connect(function(player: Player, claimedOrigin: Vector
 				origin = claimedOrigin
 			else
 				local barrelName = Config.FireOriginPartName
-				local barrel = tool:FindFirstChild(barrelName)
-				if not barrel or not barrel:IsA("BasePart") then
+				local barrel = SniperWeaponPartResolve.findFirstBasePartNamed(tool, barrelName)
+				if not barrel then
+					sniperDebugFireReject(player, "no barrel for origin " .. tostring(barrelName))
 					return
 				end
 				origin = barrel.Position
@@ -500,6 +658,21 @@ requestFire.OnServerEvent:Connect(function(player: Player, claimedOrigin: Vector
 				-- Another player’s air probe; no damage / hole
 			else
 				hitKind, victimPlayer = applyHit(player, inst)
+				if victimPlayer then
+					local savedAuto = sniperPreKillCharAutoLoads[victimPlayer]
+					sniperPreKillCharAutoLoads[victimPlayer] = nil
+					if DeathSpectateServer and DeathSpectateServer.tryBegin then
+						pcall(function()
+							DeathSpectateServer.tryBegin(victimPlayer, player, savedAuto)
+						end)
+					else
+						if savedAuto == nil then
+							writeCharacterAutoLoads(victimPlayer, true)
+						else
+							writeCharacterAutoLoads(victimPlayer, savedAuto)
+						end
+					end
+				end
 				if hitKind == nil and not isCharacterModelPart(inst) then
 					trySpawnBulletHole(inst, result.Position, result.Normal)
 				end
@@ -511,6 +684,21 @@ requestFire.OnServerEvent:Connect(function(player: Player, claimedOrigin: Vector
 
 	lastShotClock[player] = now
 	broadcastLaser(player, origin, endPos)
+
+	if Config.SniperDebugApplyHit == true then
+		local hitName = "miss"
+		if result and result.Instance then
+			hitName = result.Instance:GetFullName()
+		end
+		sniperDebug(
+			"fire: shooter=%s hit=%s hitKind=%s victim=%s endDist=%.1f",
+			player.Name,
+			hitName,
+			hitKind or "nil",
+			victimPlayer and victimPlayer.Name or "nil",
+			(endPos - origin).Magnitude
+		)
+	end
 
 	if hitKind and Config.KillConfirmSoundId ~= "" then
 		audioFeedback:FireClient(player, "KillConfirm")
@@ -532,5 +720,6 @@ end)
 Players.PlayerRemoving:Connect(function(player)
 	lastShotClock[player] = nil
 	airDownBoostConsumedUntilGround[player] = nil
+	sniperPreKillCharAutoLoads[player] = nil
 	destroyAirBoostProbe(player)
 end)

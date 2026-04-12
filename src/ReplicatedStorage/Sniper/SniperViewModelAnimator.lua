@@ -280,7 +280,14 @@ function SniperViewModelAnimator.attachToClone(clone: Model, player: Player): An
 		Inspect = loadTrack(animator, Config.SniperViewModelAnimInspect or "", false, inspectPriority),
 	}
 
-	if not tracks.Idle and not tracks.Walk and not tracks.Run and not tracks.Air and not tracks.Recoil and not tracks.Inspect then
+	if
+		not tracks.Idle
+		and not tracks.Walk
+		and not tracks.Run
+		and not tracks.Air
+		and not tracks.Recoil
+		and not tracks.Inspect
+	then
 		return nil
 	end
 

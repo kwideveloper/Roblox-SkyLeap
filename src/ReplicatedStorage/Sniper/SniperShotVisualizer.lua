@@ -1,7 +1,8 @@
--- Client-only: fast invisible carrier + Trail = streak along the shot line (local + LaserFx).
--- No visible bullet mesh, particles, or lights — only the trail left in the path.
+-- Client-only: (1) optional bright Beam along full hitscan line = tracer / bullet trace,
+-- (2) fast invisible carrier + Trail = motion streak (local preview + SniperLaserFx for others).
 
 local Debris = game:GetService("Debris")
+local RunService = game:GetService("RunService")
 local TweenService = game:GetService("TweenService")
 local Workspace = game:GetService("Workspace")
 
@@ -106,6 +107,131 @@ local function playLegacyBeam(from: Vector3, to: Vector3)
 	Debris:AddItem(folder, Config.LaserFadeSeconds or 0.14)
 end
 
+local function easeOutCubic(t: number): number
+	t = math.clamp(t, 0, 1)
+	local inv = 1 - t
+	return 1 - inv * inv * inv
+end
+
+-- Full-trajectory beam (FaceCamera): tracer from muzzle → impact; long ease-out fade + width taper.
+local function playTracerBeam(from: Vector3, to: Vector3)
+	local dir = to - from
+	local dist = dir.Magnitude
+	if dist < 1e-4 then
+		return
+	end
+
+	local folder = Instance.new("Folder")
+	folder.Name = FOLDER_NAME
+	folder.Parent = Workspace
+
+	local anchor0 = Instance.new("Part")
+	anchor0.Name = "TracerAnchor0"
+	anchor0.Anchored = true
+	anchor0.CanCollide = false
+	anchor0.CanQuery = false
+	anchor0.CastShadow = false
+	anchor0.Transparency = 1
+	anchor0.Size = Vector3.new(0.02, 0.02, 0.02)
+	anchor0.Position = from
+	anchor0.Parent = folder
+
+	local anchor1 = Instance.new("Part")
+	anchor1.Name = "TracerAnchor1"
+	anchor1.Anchored = true
+	anchor1.CanCollide = false
+	anchor1.CanQuery = false
+	anchor1.CastShadow = false
+	anchor1.Transparency = 1
+	anchor1.Size = Vector3.new(0.02, 0.02, 0.02)
+	anchor1.Position = to
+	anchor1.Parent = folder
+
+	local att0 = Instance.new("Attachment")
+	att0.Parent = anchor0
+	local att1 = Instance.new("Attachment")
+	att1.Parent = anchor1
+
+	local beam = Instance.new("Beam")
+	beam.Name = "BulletTracerBeam"
+	beam.Attachment0 = att0
+	beam.Attachment1 = att1
+	local w0i = Config.SniperBulletTracerWidth0 or 0.12
+	local w1i = Config.SniperBulletTracerWidth1 or 0.03
+	beam.Width0 = w0i
+	beam.Width1 = w1i
+	beam.FaceCamera = Config.SniperBulletTracerFaceCamera ~= false
+	local em0 = Config.SniperBulletTracerLightEmission or 1
+	beam.LightEmission = em0
+	beam.LightInfluence = Config.SniperBulletTracerLightInfluence or 0
+	local c = Config.SniperBulletTracerColor
+	if typeof(c) ~= "Color3" then
+		c = trailColor()
+	end
+	local hot = c:Lerp(Color3.new(1, 1, 1), 0.4)
+	local cool = c:Lerp(Color3.fromRGB(35, 32, 40), 0.55)
+	beam.Color = ColorSequence.new({
+		ColorSequenceKeypoint.new(0, hot),
+		ColorSequenceKeypoint.new(0.45, c),
+		ColorSequenceKeypoint.new(1, cool),
+	})
+	local tex = Config.SniperBulletTracerTexture
+	if type(tex) == "string" and tex ~= "" then
+		beam.Texture = tex
+		beam.TextureMode = Enum.TextureMode.Wrap
+		beam.TextureSpeed = Config.SniperBulletTracerTextureSpeed or 3
+		beam.TextureLength = math.clamp(dist * 0.06, 0.45, 10)
+	end
+
+	local tBase0 = Config.SniperBulletTracerTransparency0 or 0.06
+	local tBase1 = Config.SniperBulletTracerTransparency1 or 0.12
+	local tEnd0 = math.clamp(Config.SniperBulletTracerTransparencyEnd0 or 0.98, tBase0, 1)
+	local tEnd1 = math.clamp(Config.SniperBulletTracerTransparencyEnd1 or 0.99, tBase1, 1)
+	beam.Transparency = NumberSequence.new({
+		NumberSequenceKeypoint.new(0, tBase0),
+		NumberSequenceKeypoint.new(1, tBase1),
+	})
+	beam.Parent = anchor0
+
+	local dur = math.clamp(Config.SniperBulletTracerSeconds or 0.45, 0.08, 1.35)
+	local widthEndScale = math.clamp(Config.SniperBulletTracerWidthEndScale or 0.22, 0.05, 1)
+	local emEndScale = math.clamp(Config.SniperBulletTracerLightEmissionEndScale or 0.08, 0, 1)
+	local tStart = os.clock()
+	local conn: RBXScriptConnection? = nil
+	conn = RunService.RenderStepped:Connect(function()
+		if not beam.Parent then
+			if conn then
+				conn:Disconnect()
+			end
+			return
+		end
+		local u = (os.clock() - tStart) / dur
+		if u >= 1 then
+			if conn then
+				conn:Disconnect()
+			end
+			if folder.Parent then
+				folder:Destroy()
+			end
+			return
+		end
+		local fade = easeOutCubic(u)
+		local a0 = tBase0 + (tEnd0 - tBase0) * fade
+		local a1 = tBase1 + (tEnd1 - tBase1) * fade
+		beam.Transparency = NumberSequence.new({
+			NumberSequenceKeypoint.new(0, math.clamp(a0, 0, 1)),
+			NumberSequenceKeypoint.new(0.42, math.clamp(a0 * 0.92 + a1 * 0.08, 0, 1)),
+			NumberSequenceKeypoint.new(1, math.clamp(a1, 0, 1)),
+		})
+		local wMul = 1 - (1 - widthEndScale) * fade
+		beam.Width0 = math.max(0.008, w0i * wMul)
+		beam.Width1 = math.max(0.004, w1i * wMul)
+		beam.LightEmission = em0 * (1 - (1 - emEndScale) * fade)
+	end)
+
+	Debris:AddItem(folder, dur + 2)
+end
+
 local function playTrailOnly(from: Vector3, to: Vector3)
 	local dir = to - from
 	local dist = dir.Magnitude
@@ -166,10 +292,23 @@ end
 local SniperShotVisualizer = {}
 
 function SniperShotVisualizer.play(from: Vector3, to: Vector3)
-	if Config.SniperProjectileTrailEnabled == false then
-		playLegacyBeam(from, to)
+	local delta = to - from
+	if delta.Magnitude < 1e-4 then
 		return
 	end
+
+	local tracerOn = Config.SniperBulletTracerBeamEnabled ~= false
+	if tracerOn then
+		playTracerBeam(from, to)
+	end
+
+	if Config.SniperProjectileTrailEnabled == false then
+		if not tracerOn then
+			playLegacyBeam(from, to)
+		end
+		return
+	end
+
 	playTrailOnly(from, to)
 end
 

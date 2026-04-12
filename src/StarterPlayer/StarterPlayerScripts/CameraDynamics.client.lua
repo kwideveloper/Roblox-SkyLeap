@@ -345,8 +345,13 @@ local function setup()
 			return
 		end
 
-		-- Global FOV override (e.g., when menus are open) ---------------------------------
 		local cs = ensureClientStateFolder()
+		local deathSpectateBlock = cs:FindFirstChild("DeathSpectateActive")
+		if deathSpectateBlock and deathSpectateBlock:IsA("BoolValue") and deathSpectateBlock.Value == true then
+			return
+		end
+
+		-- Global FOV override (e.g., when menus are open) ---------------------------------
 		local fovOverrideActive = (cs:FindFirstChild("CameraFovOverrideActive") and cs.CameraFovOverrideActive.Value)
 		local fovOverrideValue = (cs:FindFirstChild("CameraFovOverrideValue") and cs.CameraFovOverrideValue.Value)
 		local isLedgeHanging = (cs:FindFirstChild("IsLedgeHanging") and cs.IsLedgeHanging.Value) == true

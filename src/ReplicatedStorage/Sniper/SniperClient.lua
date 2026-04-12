@@ -18,6 +18,7 @@ local SniperViewModelAnimator = require(script.Parent.SniperViewModelAnimator)
 local ViewModelClient = require(script.Parent.ViewModelClient)
 local SniperCrosshairClient = require(script.Parent.SniperCrosshairClient)
 local SniperMuzzleSmoke = require(script.Parent.SniperMuzzleSmoke)
+local SniperWeaponPartResolve = require(script.Parent.SniperWeaponPartResolve)
 
 local rng = Random.new()
 
@@ -294,17 +295,20 @@ local function bindTool(tool: Tool, options: { LocalPlayer: Player })
 	local barrelName = Config.FireOriginPartName
 	local barrel: BasePart? = nil
 	if not Config.SniperVirtualInventoryEnabled then
-		local b = tool:WaitForChild(barrelName, 15)
-		if not b or not b:IsA("BasePart") then
-			warn(("[Sniper] Tool needs a BasePart named %q (FireOriginPartName in Config)."):format(barrelName))
+		local deadline = os.clock() + 15
+		repeat
+			barrel = SniperWeaponPartResolve.findFirstBasePartNamed(tool, barrelName)
+			if barrel then
+				break
+			end
+			task.wait(0.05)
+		until os.clock() >= deadline
+		if not barrel then
+			warn(("[Sniper] Tool needs a BasePart named %q under the tool (FireOriginPartName); nested Model with same name is OK."):format(barrelName))
 			return
 		end
-		barrel = b
 	else
-		local b = tool:FindFirstChild(barrelName)
-		if b and b:IsA("BasePart") then
-			barrel = b
-		end
+		barrel = SniperWeaponPartResolve.findFirstBasePartNamed(tool, barrelName)
 	end
 
 	local localPlayer = options.LocalPlayer
@@ -387,15 +391,21 @@ local function bindTool(tool: Tool, options: { LocalPlayer: Player })
 		end
 		direction = direction.Unit
 
-		-- Hitscan: same line as crosshair when viewport mode (Config). Legacy mode uses barrel below.
+		local boreName = Config.FireOriginPartName or "Barrel"
+		-- World muzzle: viewmodel Barrel when available (matches what others see via server laser origin).
+		local boreCf: CFrame? = nil
+		if Config.SniperViewModelEnabled then
+			boreCf = ViewModelClient.getViewModelPartWorldCFrame(tool, boreName)
+		end
+
+		-- Hitscan origin: always from bore when we have a viewmodel pose; else viewport ray or equipped tool barrel.
 		local hitscanOrigin: Vector3
-		if Config.SniperHitscanUseViewportRayOrigin ~= false then
+		if boreCf then
+			hitscanOrigin = boreCf.Position
+		elseif Config.SniperHitscanUseViewportRayOrigin ~= false then
 			hitscanOrigin = ray.Origin + direction * (Config.SniperHitscanViewportOriginAlongDirStuds or 0)
 		else
-			local fireOriginCfLegacy: CFrame? = nil
-			if Config.SniperViewModelEnabled then
-				fireOriginCfLegacy = ViewModelClient.getViewModelPartWorldCFrame(tool, Config.FireOriginPartName or "Barrel")
-			end
+			local fireOriginCfLegacy: CFrame? = boreCf
 			if not fireOriginCfLegacy and barrel then
 				fireOriginCfLegacy = barrel.CFrame
 			end
@@ -408,10 +418,7 @@ local function bindTool(tool: Tool, options: { LocalPlayer: Player })
 			end
 		end
 
-		local fireOriginCf: CFrame? = nil
-		if Config.SniperViewModelEnabled then
-			fireOriginCf = ViewModelClient.getViewModelPartWorldCFrame(tool, Config.FireOriginPartName or "Barrel")
-		end
+		local fireOriginCf: CFrame? = boreCf
 		if not fireOriginCf and barrel then
 			fireOriginCf = barrel.CFrame
 		end
@@ -430,8 +437,8 @@ local function bindTool(tool: Tool, options: { LocalPlayer: Player })
 			smokeFollowPart = ViewModelClient.getViewModelPart(tool, smokePartName)
 		end
 		if not smokeFollowPart then
-			local m = tool:FindFirstChild(smokePartName, true)
-			if m and m:IsA("BasePart") then
+			local m = SniperWeaponPartResolve.findFirstBasePartNamed(tool, smokePartName)
+			if m then
 				smokeFollowPart = m
 				if not smokeCf then
 					smokeCf = m.CFrame

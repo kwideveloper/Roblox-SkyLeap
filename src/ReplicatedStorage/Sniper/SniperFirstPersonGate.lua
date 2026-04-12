@@ -11,6 +11,10 @@ function SniperFirstPersonGate.isCameraCloseForFirstPerson(player: Player): bool
 	if not camera or not player then
 		return false
 	end
+	local ch = player.Character
+	if ch and ch:GetAttribute("SkyLeapSniperViewModelActive") == true then
+		return true
+	end
 	-- LockFirstPerson does not always keep (Focus - Camera) within the zoom-distance heuristic; treat as first person anyway.
 	if player.CameraMode == Enum.CameraMode.LockFirstPerson then
 		return true

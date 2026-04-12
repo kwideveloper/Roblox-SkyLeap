@@ -110,6 +110,7 @@ ensureRemoteEvent(remotesFolder, "ZombieTagAction")
 ensureRemoteEvent(remotesFolder, "SniperRequestFire")
 ensureRemoteEvent(remotesFolder, "SniperLaserFx")
 ensureRemoteEvent(remotesFolder, "SniperAudioFeedback")
+ensureRemoteEvent(remotesFolder, "DeathSpectatePayload")
 
 -- Global leaderboards
 ensureRemoteEvent(remotesFolder, "LeaderboardsUpdate")

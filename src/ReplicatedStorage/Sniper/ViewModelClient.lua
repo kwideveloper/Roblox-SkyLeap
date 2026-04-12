@@ -6,6 +6,7 @@ local Workspace = game:GetService("Workspace")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local Config = require(script.Parent.Config)
+local SniperWeaponPartResolve = require(script.Parent.SniperWeaponPartResolve)
 local SniperPointerSuppress = require(script.Parent.SniperPointerSuppress)
 local SniperFirstPersonGate = require(script.Parent.SniperFirstPersonGate)
 local SniperLoadoutState = require(script.Parent.SniperLoadoutState)
@@ -15,6 +16,29 @@ local SniperViewModelAnimator = require(script.Parent.SniperViewModelAnimator)
 local RENDER_STEP_NAME = "SkyLeapSniperViewModel"
 
 local warnedMissingTemplate = false
+-- Rigid pivot→CameraBone relation captured once per clone (before Parent = camera).
+local camBoneRelCache: { [Model]: CFrame } = {}
+local warnedViewModelNotAlongWorldZ: { [string]: boolean } = {}
+
+-- Convention: template Model pivot (PrimaryPart) LookVector should lie along ±World Z (Studio blue axis).
+local function warnIfViewmodelNotFacingWorldZ(clone: Model, modelName: string)
+	if Config.SniperViewModelWarnIfNotFacingWorldZ == false then
+		return
+	end
+	if warnedViewModelNotAlongWorldZ[modelName] then
+		return
+	end
+	local lv = clone:GetPivot().LookVector
+	if math.abs(lv:Dot(Vector3.zAxis)) < 0.9 then
+		warnedViewModelNotAlongWorldZ[modelName] = true
+		warn(
+			("[Sniper] ViewModel %q: orient the template so PrimaryPart LookVector aligns with World ±Z (blue axis). Current LookVector=%s"):format(
+				modelName,
+				tostring(lv)
+			)
+		)
+	end
+end
 
 local function findViewModelsFolder(): Instance?
 	local want = Config.ViewModelsFolderName or "ViewModels"
@@ -69,7 +93,7 @@ local function ensurePrimaryPart(model: Model): BasePart?
 	end
 	local preferredNames = { "CameraBone", "HumanoidRootPart", "Main" }
 	for _, name in ipairs(preferredNames) do
-		local p = model:FindFirstChild(name)
+		local p = model:FindFirstChild(name, true)
 		if p and p:IsA("BasePart") then
 			model.PrimaryPart = p
 			return p
@@ -147,6 +171,39 @@ local function prepareClone(clone: Model)
 	return true
 end
 
+local function buildCameraBoneTargetCFrame(camCf: CFrame, offset: CFrame): CFrame
+	if Config.SniperViewModelCameraBoneMatchCameraBasis == false then
+		return camCf * offset
+	end
+	local pos = (camCf * offset).Position
+	local look = camCf.LookVector
+	local upRef = camCf.UpVector
+	local cf = CFrame.lookAt(pos, pos + look, upRef)
+	local rollDeg = tonumber(Config.SniperViewModelCameraBoneRollDegrees) or 0
+	if math.abs(rollDeg) > 1e-4 then
+		cf = cf * CFrame.Angles(0, 0, math.rad(rollDeg))
+	end
+	return cf
+end
+
+-- Model pivot CFrame so CameraBone matches target (see buildCameraBoneTargetCFrame).
+local function solveViewmodelWorldPivot(clone: Model, camCf: CFrame, offset: CFrame): CFrame
+	if Config.SniperViewModelPivotUsesCameraBone == false then
+		return camCf * offset
+	end
+	local boneName = Config.SniperViewModelCameraBoneName or "CameraBone"
+	local bone = clone:FindFirstChild(boneName, true)
+	if not bone or not bone:IsA("BasePart") then
+		return buildCameraBoneTargetCFrame(camCf, offset)
+	end
+	local target = buildCameraBoneTargetCFrame(camCf, offset)
+	local rel = camBoneRelCache[clone]
+	if not rel then
+		rel = clone:GetPivot():ToObjectSpace(bone.CFrame)
+	end
+	return target * rel:Inverse()
+end
+
 local function setSniperViewmodelAttr(ch: Model?, on: boolean)
 	if not ch then
 		return
@@ -218,6 +275,7 @@ local function destroyClone(state: { clone: Model?, animHandle: SniperViewModelA
 		state.animHandle = nil
 	end
 	if state.clone then
+		camBoneRelCache[state.clone] = nil
 		state.clone:Destroy()
 		state.clone = nil
 	end
@@ -255,7 +313,18 @@ local function findTemplate(modelName: string): Model?
 	return resolveTemplateModel(folder, modelName)
 end
 
-local function updateOne(state: { tool: Tool, player: Player, modelName: string, clone: Model?, animHandle: SniperViewModelAnimator.AnimatorHandle?, pointerSuppressActive: boolean?, savedMouseTargetFilter: Instance?, mouseFilterApplied: boolean? })
+local function updateOne(
+	state: {
+		tool: Tool,
+		player: Player,
+		modelName: string,
+		clone: Model?,
+		animHandle: SniperViewModelAnimator.AnimatorHandle?,
+		pointerSuppressActive: boolean?,
+		savedMouseTargetFilter: Instance?,
+		mouseFilterApplied: boolean?,
+	}
+)
 	if not shouldShowViewmodel(state) then
 		destroyClone(state)
 		return
@@ -288,6 +357,14 @@ local function updateOne(state: { tool: Tool, player: Player, modelName: string,
 		if not prepareClone(clone) then
 			clone:Destroy()
 			return
+		end
+		warnIfViewmodelNotFacingWorldZ(clone, state.modelName)
+		if Config.SniperViewModelPivotUsesCameraBone ~= false then
+			local bn = Config.SniperViewModelCameraBoneName or "CameraBone"
+			local b = clone:FindFirstChild(bn, true)
+			if b and b:IsA("BasePart") then
+				camBoneRelCache[clone] = clone:GetPivot():ToObjectSpace(b.CFrame)
+			end
 		end
 		clone.Parent = cam
 		state.clone = clone
@@ -363,8 +440,8 @@ function ViewModelClient.getViewModelPartWorldCFrame(tool: Tool, partName: strin
 	if not shouldShowViewmodel(state) then
 		return nil
 	end
-	local p = state.clone:FindFirstChild(partName, true)
-	if p and p:IsA("BasePart") then
+	local p = SniperWeaponPartResolve.findFirstBasePartNamed(state.clone, partName)
+	if p then
 		return p.CFrame
 	end
 	return nil
@@ -381,16 +458,47 @@ function ViewModelClient.getViewModelPart(tool: Tool, partName: string): BasePar
 	if not shouldShowViewmodel(state) then
 		return nil
 	end
-	local p = state.clone:FindFirstChild(partName, true)
-	if p and p:IsA("BasePart") then
-		return p
-	end
-	return nil
+	return SniperWeaponPartResolve.findFirstBasePartNamed(state.clone, partName)
 end
 
 -- Backward-compatible alias: fire origin uses FireOriginPartName.
 function ViewModelClient.getViewModelBarrelWorldCFrame(tool: Tool): CFrame?
 	return ViewModelClient.getViewModelPartWorldCFrame(tool, Config.FireOriginPartName or "Barrel")
+end
+
+-- Prepared clone for another client’s camera (e.g. death spectate): same mesh/strip/anchors as local viewmodel, no tool state.
+-- Same pivot rule as the equipped viewmodel (CameraBone at camera * offset when enabled).
+function ViewModelClient.solveViewmodelWorldPivot(clone: Model, camCf: CFrame, offset: CFrame): CFrame
+	return solveViewmodelWorldPivot(clone, camCf, offset)
+end
+
+function ViewModelClient.createSpectatorViewModelClone(modelName: string?): Model?
+	local name = modelName or Config.SniperViewModelName or "Sniper"
+	local template = findTemplate(name)
+	if not template then
+		return nil
+	end
+	local clone = template:Clone()
+	clone.Name = "SniperViewModelSpectator"
+	if not prepareClone(clone) then
+		clone:Destroy()
+		return nil
+	end
+	if Config.SniperViewModelPivotUsesCameraBone ~= false then
+		local bn = Config.SniperViewModelCameraBoneName or "CameraBone"
+		local b = clone:FindFirstChild(bn, true)
+		if b and b:IsA("BasePart") then
+			camBoneRelCache[clone] = clone:GetPivot():ToObjectSpace(b.CFrame)
+		end
+	end
+	warnIfViewmodelNotFacingWorldZ(clone, name)
+	return clone
+end
+
+function ViewModelClient.forgetViewmodelClone(clone: Model?)
+	if clone then
+		camBoneRelCache[clone] = nil
+	end
 end
 
 function ViewModelClient.attach(tool: Tool, player: Player, viewModelName: string?)

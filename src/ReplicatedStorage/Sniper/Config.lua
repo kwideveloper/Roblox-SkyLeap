@@ -4,7 +4,7 @@ return {
 	ToolName = "Sniper",
 
 	-- BasePart name for hitscan / laser / trail origin (world position). Put this at the bore exit on the Tool AND on the viewmodel clone.
-	-- Typical names: "Barrel", "FirePoint", "Tip". Must match exactly on both assets.
+	-- Typical names: "Barrel", "FirePoint", "Tip". Match the geometry BasePart name (nested Model with same name is OK).
 	FireOriginPartName = "Barrel",
 
 	-- BasePart name for smoke VFX only (can sit slightly forward of the bore). Tool + viewmodel clone.
@@ -68,7 +68,20 @@ return {
 	-- Camera position–focus distance (studs): above strict first-person but still “close” zoom. Increase if the gun never appears.
 	SniperViewModelMaxOrbitDistance = 8,
 	-- Pivot in camera space: X right, Y up, Z along look direction. Multiply with CFrame.Angles(...) to roll/pitch the rifle.
-	SniperViewModelCameraCFrame = CFrame.new(0.12, -0.22, -0.78),
+	-- Author viewmodels in Studio with PrimaryPart LookVector along World ±Z (blue axis); then this offset only tweaks grip vs camera.
+	SniperViewModelCameraCFrame = CFrame.new(0.12, -0.08, -0.78),
+	-- If true, Model pivot is solved so the named part (default CameraBone) matches cameraCFrame * SniperViewModelCameraCFrame (eye / bore anchor).
+	SniperViewModelPivotUsesCameraBone = true,
+	SniperViewModelCameraBoneName = "CameraBone",
+	-- If true, CameraBone orientation follows camera look + up (CFrame.lookAt) so the weapon sits on the correct side of the screen; roll optional below.
+	-- If false, uses full cameraCFrame * SniperViewModelCameraCFrame (your own rotations in the offset CFrame).
+	SniperViewModelCameraBoneMatchCameraBasis = true,
+	-- Extra roll (degrees) around the view axis after basis match; tune if the mesh appears twisted.
+	SniperViewModelCameraBoneRollDegrees = 0,
+	-- While the sniper viewmodel is active, Humanoid.CameraOffset.Z (character space) nudges the engine camera forward to reduce clipping into head/arms.
+	SniperHumanoidCameraOffsetZWhenViewmodel = -0.55,
+	-- If true, warn once per template name when PrimaryPart LookVector is not mostly parallel to World ±Z.
+	SniperViewModelWarnIfNotFacingWorldZ = true,
 	SniperViewModelCastShadow = false,
 	-- Mouse ray (Mouse.Target / Hit) ignores the viewmodel clone so parts under the camera do not steal hover / “selection” cursor.
 	SniperViewModelSetMouseTargetFilter = true,
@@ -127,8 +140,10 @@ return {
 	SniperHideRobloxDefaultBackpack = true,
 	-- Lock camera to first person while the sniper slot is selected (virtual loadout).
 	SniperForceFirstPersonWhileSniperActive = true,
+	-- Server: verbose hit/kill logs (ray target, resolve, health, victim). Set true while debugging PvP; set false in production.
+	SniperDebugApplyHit = true,
 	-- Server: viewport/camera origin must stay within this distance of Head (anti-cheat). FP camera is usually <6; keep margin for rigs.
-	SniperMaxFireOriginFromHeadStuds = 48,
+	SniperMaxFireOriginFromHeadStuds = 72,
 	-- If true (recommended), hitscan uses the same ray as the crosshair: ViewportPointToRay origin + direction from the client (no head/barrel re-origin; fixes drift while moving/falling).
 	-- If false, uses SniperHitscanRayFromHead / barrel logic below (can miss the reticle when the body moves between client frame and server).
 	SniperHitscanUseViewportRayOrigin = true,
@@ -186,14 +201,35 @@ return {
 	-- Push the decal part slightly along the surface normal to reduce z-fighting.
 	SniperBulletHoleNormalOffsetStuds = 0.045,
 
+	-- Full-path bullet trace / tracer (client): Beam from hitscan origin → impact.
+	-- With viewmodel: client sends bore (FireOriginPartName) world position so everyone sees the line leave the Barrel.
+	SniperBulletTracerBeamEnabled = true,
+	SniperBulletTracerSeconds = 0.48,
+	SniperBulletTracerWidth0 = 0.12,
+	SniperBulletTracerWidth1 = 0.032,
+	-- After fade: multiply widths by this (thinner tip as it vanishes).
+	SniperBulletTracerWidthEndScale = 0.18,
+	SniperBulletTracerColor = Color3.fromRGB(255, 238, 200),
+	SniperBulletTracerLightEmission = 1,
+	SniperBulletTracerLightEmissionEndScale = 0.06,
+	SniperBulletTracerLightInfluence = 0,
+	SniperBulletTracerFaceCamera = true,
+	-- Optional rbx asset string; leave "" for a clean glowing line.
+	SniperBulletTracerTexture = "",
+	SniperBulletTracerTextureSpeed = 3.5,
+	SniperBulletTracerTransparency0 = 0.04,
+	SniperBulletTracerTransparency1 = 0.08,
+	SniperBulletTracerTransparencyEnd0 = 0.97,
+	SniperBulletTracerTransparencyEnd1 = 0.99,
+
 	-- Hitscan streak (client): invisible point moves very fast; only Trail draws the line. False = legacy Beam.
 	SniperProjectileTrailEnabled = true,
 	SniperProjectileCarrierSpan = 0.12,
 	SniperProjectileTrailColor = Color3.fromRGB(255, 185, 165),
 	SniperProjectileTravelMin = 0.028,
-	SniperProjectileTravelMax = 0.1,
+	SniperProjectileTravelMax = 0.14,
 	SniperProjectileSpeedStudsPerSec = 12000,
-	SniperProjectileTrailLifetime = 0.16,
+	SniperProjectileTrailLifetime = 0.26,
 	SniperProjectileTrailMinLength = 0.02,
 	SniperProjectileTrailMaxLength = 12,
 	SniperProjectileTrailWidth0 = 0.42,
@@ -300,7 +336,8 @@ return {
 	FireSoundForOthersFadeOutSeconds = 0.5,
 	-- Plays once when the shot is accepted locally (start of reload cooldown).
 	ReloadSoundId = "rbxassetid://122790640796504",
-	ReloadSoundVolume = 0.55,
+	ReloadSoundVolume = 0.1,
+	-- ReloadSoundVolume = 0.55,
 	-- Shell casing hitting the ground (shooter only). Plays after a short delay.
 	ShellCasingSoundId = "rbxassetid://137532489135436",
 	ShellCasingVolume = 0.75,

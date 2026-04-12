@@ -7,6 +7,16 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local Config = require(ReplicatedStorage.Movement.Config)
 
+local SniperConfigForCamera: any = nil
+do
+	local ok, m = pcall(function()
+		return require(ReplicatedStorage:WaitForChild("Sniper"):WaitForChild("Config"))
+	end)
+	if ok then
+		SniperConfigForCamera = m
+	end
+end
+
 local player = Players.LocalPlayer
 local camera = workspace.CurrentCamera
 
@@ -370,7 +380,7 @@ local function isArmOrHandLimbPart(part: BasePart): boolean
 end
 
 local function applySniperViewmodelArmSuppression()
-	if not character or not state.isShowingBody then
+	if not character then
 		return
 	end
 	for _, part in ipairs(state.parts) do
@@ -462,7 +472,7 @@ local function onCharacterAdded(char)
 	local conAdded = char.DescendantAdded:Connect(function(desc)
 		if desc:IsA("BasePart") and desc.Name ~= "Head" then
 			table.insert(state.parts, desc)
-			if state.isShowingBody then
+			if state.isShowingBody or sniperViewModelHidingArms() then
 				if sniperViewModelHidingArms() and isArmOrHandLimbPart(desc) then
 					desc.LocalTransparencyModifier = 1
 				else
@@ -527,12 +537,15 @@ end
 -- Per-frame: toggle body visibility based on zoom level
 RunService.RenderStepped:Connect(function()
 	local zoomedIn = isZoomedFullyIn()
-	setBodyVisible(zoomedIn)
+	local sniperVm = sniperViewModelHidingArms()
+	-- With sniper viewmodel, never use "show my limbs" mode (avoids arms/torso clipping the weapon).
+	setBodyVisible(zoomedIn and not sniperVm)
 	applySniperViewmodelArmSuppression()
-	updateHeadVisibility(zoomedIn)
-	updateHeadAccessoriesVisibility(zoomedIn)
-	updateOtherAccessoriesVisibility(zoomedIn)
-	updateLimbAccessoriesVisibility(zoomedIn)
+	local fpHide = zoomedIn or sniperVm
+	updateHeadVisibility(fpHide)
+	updateHeadAccessoriesVisibility(fpHide)
+	updateOtherAccessoriesVisibility(fpHide)
+	updateLimbAccessoriesVisibility(fpHide)
 
 	-- One-time logs on transition into/out of max zoom to verify behavior
 	if camera then
@@ -560,19 +573,35 @@ RunService.RenderStepped:Connect(function()
 		end
 	end
 
-	-- Nudge camera slightly forward only when fully zoomed in by adjusting Humanoid.CameraOffset.Z
+	-- Nudge camera slightly forward when fully zoomed in and/or sniper viewmodel (Humanoid.CameraOffset.Z).
 	-- This coexists with our other systems that tween Y (we preserve their Y each frame).
 	if humanoid then
 		local currentOffset = humanoid.CameraOffset
+		local sniperZ: number? = nil
+		if sniperVm and SniperConfigForCamera then
+			local z = SniperConfigForCamera.SniperHumanoidCameraOffsetZWhenViewmodel
+			if type(z) == "number" then
+				sniperZ = z
+			end
+		end
+		local fpZ: number? = nil
 		if zoomedIn then
-			local fpZ = (Config.FirstPersonForwardOffsetZ ~= nil) and Config.FirstPersonForwardOffsetZ or -1
+			fpZ = (Config.FirstPersonForwardOffsetZ ~= nil) and Config.FirstPersonForwardOffsetZ or -1
+		end
+		if sniperZ ~= nil then
+			if fpZ == nil then
+				fpZ = sniperZ
+			else
+				fpZ = math.min(fpZ, sniperZ)
+			end
+		end
+		if fpZ ~= nil then
 			if math.abs((currentOffset.Z - fpZ)) > 1e-3 or not state.appliedFPZ then
 				humanoid.CameraOffset = Vector3.new(0, currentOffset.Y, fpZ)
 				state.appliedFPZ = true
 			end
 		else
 			if state.appliedFPZ then
-				-- restore Z to 0, keep Y from other systems
 				humanoid.CameraOffset = Vector3.new(0, currentOffset.Y, 0)
 				state.appliedFPZ = false
 			end
