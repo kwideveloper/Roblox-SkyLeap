@@ -144,8 +144,8 @@ return {
 	SniperDebugApplyHit = true,
 	-- Server: viewport/camera origin must stay within this distance of Head (anti-cheat). FP camera is usually <6; keep margin for rigs.
 	SniperMaxFireOriginFromHeadStuds = 72,
-	-- If true (recommended), hitscan uses the same ray as the crosshair: ViewportPointToRay origin + direction from the client (no head/barrel re-origin; fixes drift while moving/falling).
-	-- If false, uses SniperHitscanRayFromHead / barrel logic below (can miss the reticle when the body moves between client frame and server).
+	-- If true (recommended), hitscan uses ViewportPointToRay(center) origin + direction — same line as the GUI crosshair.
+	-- If false, hitscan starts at the viewmodel/tool bore (parallel to camera = parallax vs reticle).
 	SniperHitscanUseViewportRayOrigin = true,
 	-- Optional: move start slightly along aim from viewport origin (studs). 0 = use exact camera ray origin.
 	SniperHitscanViewportOriginAlongDirStuds = 0,

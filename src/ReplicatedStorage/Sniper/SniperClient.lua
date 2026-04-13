@@ -392,21 +392,22 @@ local function bindTool(tool: Tool, options: { LocalPlayer: Player })
 		direction = direction.Unit
 
 		local boreName = Config.FireOriginPartName or "Barrel"
-		-- World muzzle: viewmodel Barrel when available (matches what others see via server laser origin).
 		local boreCf: CFrame? = nil
 		if Config.SniperViewModelEnabled then
 			boreCf = ViewModelClient.getViewModelPartWorldCFrame(tool, boreName)
 		end
 
-		-- Hitscan origin: always from bore when we have a viewmodel pose; else viewport ray or equipped tool barrel.
+		-- Hitscan: viewport center ray (matches crosshair). Using bore position + camera direction causes
+		-- parallel-ray parallax (hits land down/right vs reticle when the barrel is below/right of the lens).
+		local useViewportHitscan = Config.SniperHitscanUseViewportRayOrigin ~= false
 		local hitscanOrigin: Vector3
-		if boreCf then
-			hitscanOrigin = boreCf.Position
-		elseif Config.SniperHitscanUseViewportRayOrigin ~= false then
+		if useViewportHitscan then
 			hitscanOrigin = ray.Origin + direction * (Config.SniperHitscanViewportOriginAlongDirStuds or 0)
+		elseif boreCf then
+			hitscanOrigin = boreCf.Position
 		else
-			local fireOriginCfLegacy: CFrame? = boreCf
-			if not fireOriginCfLegacy and barrel then
+			local fireOriginCfLegacy: CFrame? = nil
+			if barrel then
 				fireOriginCfLegacy = barrel.CFrame
 			end
 			if fireOriginCfLegacy then
@@ -424,7 +425,14 @@ local function bindTool(tool: Tool, options: { LocalPlayer: Player })
 		end
 
 		local endPos = raycastPreview(hitscanOrigin, direction, character)
-		SniperShotVisualizer.play(hitscanOrigin, endPos)
+		-- Tracer line: start at bore (visible gun); hitscan still uses viewport ray above.
+		local tracerFrom = hitscanOrigin
+		if boreCf then
+			tracerFrom = boreCf.Position
+		elseif barrel then
+			tracerFrom = barrel.Position
+		end
+		SniperShotVisualizer.play(tracerFrom, endPos)
 
 		-- Smoke only at SniperMuzzleSmokePartName ("Muzzle" by default), not at the bore.
 		local smokePartName = Config.SniperMuzzleSmokePartName or "Muzzle"

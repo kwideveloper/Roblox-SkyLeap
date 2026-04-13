@@ -1,6 +1,9 @@
 -- Bunny hop mechanic: perfect jump right after landing grants speed and momentum boost
+-- PostSimulation reinforcement: Roblox Humanoid/controller often overwrites horizontal velocity
+-- on the jump frame; reapplying after physics matches common fixes (see devforum bhop threads).
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
 
 local Config = require(ReplicatedStorage.Movement.Config)
 local Momentum = require(ReplicatedStorage.Movement.Momentum)
@@ -17,8 +20,40 @@ end
 
 local function ensureState(character)
 	perCharacter[character] = perCharacter[character]
-		or { stacks = 0, lastLandTick = 0, conn = nil, landWindowActive = false }
+		or { stacks = 0, lastLandTick = 0, conn = nil, landWindowActive = false, postAssistConn = nil }
 	return perCharacter[character]
+end
+
+local function stopPostAssist(state)
+	if state.postAssistConn then
+		state.postAssistConn:Disconnect()
+		state.postAssistConn = nil
+	end
+end
+
+local function wasAirborneState(old)
+	return old == Enum.HumanoidStateType.Freefall
+		or old == Enum.HumanoidStateType.Jumping
+		or old == Enum.HumanoidStateType.FallingDown
+end
+
+local function shouldOpenLandWindow(old, new)
+	if not wasAirborneState(old) then
+		return false
+	end
+	return new == Enum.HumanoidStateType.Landed or new == Enum.HumanoidStateType.Running
+end
+
+local function openLandWindow(state, character)
+	state.lastLandTick = os.clock()
+	state.landWindowActive = true
+	local thisLand = state.lastLandTick
+	task.delay((Config.BunnyHopWindowSeconds or 0.12) + 0.02, function()
+		if state and perCharacter[character] and state.lastLandTick == thisLand and state.landWindowActive then
+			state.stacks = 0
+			state.landWindowActive = false
+		end
+	end)
 end
 
 function BunnyHop.setup(character)
@@ -31,23 +66,24 @@ function BunnyHop.setup(character)
 		state.conn:Disconnect()
 		state.conn = nil
 	end
+	stopPostAssist(state)
 	state.stacks = 0
 	state.lastLandTick = 0
+	state.landWindowActive = false
 	state.conn = humanoid.StateChanged:Connect(function(old, new)
-		if
-			new == Enum.HumanoidStateType.Landed
-			or (new == Enum.HumanoidStateType.Running and old == Enum.HumanoidStateType.Freefall)
-		then
-			state.lastLandTick = os.clock()
-			state.landWindowActive = true
-			-- Auto-break the chain if the player does not jump within the window
-			local thisLand = state.lastLandTick
-			task.delay((Config.BunnyHopWindowSeconds or 0.12) + 0.02, function()
-				if state and perCharacter[character] and state.lastLandTick == thisLand and state.landWindowActive then
-					state.stacks = 0
-					state.landWindowActive = false
-				end
-			end)
+		if shouldOpenLandWindow(old, new) then
+			openLandWindow(state, character)
+		end
+	end)
+	-- First grounded frame: treat as a fresh landing so the first timed jump can start a chain (spawn / reset).
+	task.defer(function()
+		if not character.Parent then
+			return
+		end
+		local s = perCharacter[character]
+		local _, hum = getParts(character)
+		if s and hum and hum.FloorMaterial ~= Enum.Material.Air then
+			openLandWindow(s, character)
 		end
 	end)
 end
@@ -61,6 +97,7 @@ function BunnyHop.teardown(character)
 		state.conn:Disconnect()
 		state.conn = nil
 	end
+	stopPostAssist(state)
 	perCharacter[character] = nil
 end
 
@@ -101,31 +138,77 @@ function BunnyHop.tryApplyOnJump(character, momentumState, isSprinting)
 	local maxStacks = Config.BunnyHopMaxStacks or 3
 	state.stacks = math.clamp((state.stacks or 0) + 1, 1, maxStacks)
 
-	-- Determine horizontal preference directions
-	local moveDir = (humanoid.MoveDirection.Magnitude > 0.05) and humanoid.MoveDirection or root.CFrame.LookVector
-	moveDir = Vector3.new(moveDir.X, 0, moveDir.Z)
-	if moveDir.Magnitude > 0 then
-		moveDir = moveDir.Unit
-	else
-		-- No intent; fall back to current travel
-		moveDir = Vector3.new(0, 0, 0)
-	end
-
 	local vel = root.AssemblyLinearVelocity
 	local horiz = Vector3.new(vel.X, 0, vel.Z)
 	local horizMag = horiz.Magnitude
+	local travelDir = (horizMag > 0.05) and horiz.Unit or Vector3.new(0, 0, 0)
+
+	local coastOn = Config.BunnyHopCoastEnabled ~= false
+	local inputEps = Config.BunnyHopCoastInputEpsilon or 0.08
+	local moveFromInput = humanoid.MoveDirection.Magnitude > inputEps
+	local coastMinStacks = Config.BunnyHopCoastMinStacks or 2
+	local isCoasting = coastOn and state.stacks >= coastMinStacks
+	local coastMinSpeed = Config.BunnyHopCoastMinSpeed or 1.2
+
+	-- moveDir: keyboard intent. When coasting with no WASD, leave zero so boost follows velocity (+ optional camera).
+	local moveDir
+	if moveFromInput then
+		moveDir = humanoid.MoveDirection
+		moveDir = Vector3.new(moveDir.X, 0, moveDir.Z)
+		if moveDir.Magnitude > 0 then
+			moveDir = moveDir.Unit
+		else
+			moveDir = Vector3.new(0, 0, 0)
+		end
+	elseif isCoasting and horizMag >= coastMinSpeed then
+		moveDir = Vector3.new(0, 0, 0)
+	else
+		moveDir = root.CFrame.LookVector
+		moveDir = Vector3.new(moveDir.X, 0, moveDir.Z)
+		if moveDir.Magnitude > 0 then
+			moveDir = moveDir.Unit
+		else
+			moveDir = Vector3.new(0, 0, 0)
+		end
+	end
+
 	if horizMag < 0.05 and moveDir.Magnitude == 0 then
-		-- No movement and no intent: skip
+		state.stacks = math.max(0, state.stacks - 1)
 		return 0
 	end
 
-	local travelDir = (horizMag > 0.05) and horiz.Unit or moveDir
 	local carry = math.clamp((Config.BunnyHopDirectionCarry or 0.75), 0, 1)
-	local blended = (travelDir * carry) + (moveDir * (1 - carry))
-	if blended.Magnitude > 0 then
-		blended = blended.Unit
+	if isCoasting and moveFromInput then
+		local addCarry = Config.BunnyHopCoastStrafeExtraCarry or 0.12
+		carry = math.clamp(carry + addCarry, 0, 0.92)
+	end
+
+	local blended
+	if isCoasting and not moveFromInput and horizMag >= coastMinSpeed then
+		blended = travelDir
+		local mix = Config.BunnyHopCoastCameraSteerMix or 0
+		if mix > 1e-4 then
+			local cam = workspace.CurrentCamera
+			if cam then
+				local ch = Vector3.new(cam.CFrame.LookVector.X, 0, cam.CFrame.LookVector.Z)
+				if ch.Magnitude > 0.05 then
+					ch = ch.Unit
+					blended = travelDir * (1 - mix) + ch * mix
+					if blended.Magnitude > 0.01 then
+						blended = blended.Unit
+					else
+						blended = travelDir
+					end
+				end
+			end
+		end
 	else
-		blended = moveDir.Magnitude > 0 and moveDir or travelDir
+		blended = (travelDir * carry) + (moveDir * (1 - carry))
+		if blended.Magnitude > 0 then
+			blended = blended.Unit
+		else
+			blended = if moveDir.Magnitude > 0 then moveDir else travelDir
+		end
 	end
 
 	local newHoriz
@@ -168,13 +251,24 @@ function BunnyHop.tryApplyOnJump(character, momentumState, isSprinting)
 		bonus = bonus * Config.BunnyHopSprintBonus
 	end
 
+	-- Strafe reward: extra impulse when wish direction is clearly lateral to current travel (CS-style input).
+	if horizMag > 0.05 and moveDir.Magnitude > 0.01 then
+		local lateral = 1 - math.abs(horiz.Unit:Dot(moveDir))
+		local strafeT = math.clamp(lateral / 0.55, 0, 1)
+		local strafeMul = 1 + ((Config.BunnyHopStrafeBonus or 0.22) * strafeT)
+		bonus = bonus * strafeMul
+	end
+
 	-- VELOCITY PRESERVATION: Scale bonus based on current speed to maintain momentum (BALANCED)
 	local currentSpeed = newHoriz.Magnitude
 	local speedScale = math.max(1.1, currentSpeed / 40) -- BALANCED: Gradual scaling that builds up nicely to cap
 	bonus = bonus * speedScale
 
-	-- REMOVED MAXADD LIMITATION: Let bunny hop add unlimited velocity per hop
 	local delta = blended * bonus
+	local maxAdd = Config.BunnyHopMaxAddPerHop
+	if type(maxAdd) == "number" and maxAdd > 0 and delta.Magnitude > maxAdd then
+		delta = delta.Unit * maxAdd
+	end
 	newHoriz = newHoriz + delta
 
 	-- Clamp total horizontal speed
@@ -183,20 +277,49 @@ function BunnyHop.tryApplyOnJump(character, momentumState, isSprinting)
 	if nhMag > cap then
 		newHoriz = newHoriz.Unit * cap
 	end
-	root.AssemblyLinearVelocity = Vector3.new(newHoriz.X, vel.Y, newHoriz.Z)
+	local savedHoriz = Vector3.new(newHoriz.X, 0, newHoriz.Z)
+	root.AssemblyLinearVelocity = Vector3.new(savedHoriz.X, vel.Y, savedHoriz.Z)
 
-	-- Briefly lock horizontal to eliminate drift/drag (OPTIMIZED: much shorter duration)
-	local lockDur = math.max(0, Config.BunnyHopLockSeconds or 0.15)
-	if lockDur > 0 then
-		local startT = os.clock()
-		task.spawn(function()
-			while (os.clock() - startT) < lockDur do
-				local curV = root.AssemblyLinearVelocity
-				root.AssemblyLinearVelocity = Vector3.new(newHoriz.X, curV.Y, newHoriz.Z)
-				game:GetService("RunService").Heartbeat:Wait() -- More responsive than task.wait()
-			end
-		end)
+	-- Same-frame tail + PostSimulation: Humanoid often adjusts velocity after our input callback.
+	task.defer(function()
+		if not (root and root.Parent and character.Parent) then
+			return
+		end
+		local curV = root.AssemblyLinearVelocity
+		root.AssemblyLinearVelocity = Vector3.new(savedHoriz.X, curV.Y, savedHoriz.Z)
+	end)
+
+	stopPostAssist(state)
+	local assistSteps = Config.BunnyHopPostAssistSteps
+	if assistSteps == nil then
+		assistSteps = math.clamp(math.floor((Config.BunnyHopLockSeconds or 0.12) * 70 + 0.5), 4, 14)
 	end
+	assistSteps = math.clamp(assistSteps, 2, 18)
+	local remaining = assistSteps
+	state.postAssistConn = RunService.PostSimulation:Connect(function()
+		if not (root and root.Parent and character.Parent) then
+			stopPostAssist(state)
+			return
+		end
+		local curV = root.AssemblyLinearVelocity
+		local xz = Vector3.new(curV.X, 0, curV.Z)
+		local sm = savedHoriz.Magnitude
+		if sm > 0.05 then
+			local keepDot = Config.BunnyHopPostAssistMinAlignDot
+			if keepDot == nil then
+				keepDot = 0.78
+			end
+			local magRatio = if sm > 1e-4 then xz.Magnitude / sm else 1
+			local align = if xz.Magnitude > 0.05 then xz.Unit:Dot(savedHoriz.Unit) else 0
+			if magRatio < 0.9 or align < keepDot then
+				root.AssemblyLinearVelocity = Vector3.new(savedHoriz.X, curV.Y, savedHoriz.Z)
+			end
+		end
+		remaining -= 1
+		if remaining <= 0 then
+			stopPostAssist(state)
+		end
+	end)
 
 	-- Momentum bonus with sprint consideration and velocity scaling
 	if momentumState and Momentum.addBonus then

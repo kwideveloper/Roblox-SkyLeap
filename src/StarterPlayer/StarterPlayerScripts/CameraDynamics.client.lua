@@ -372,6 +372,7 @@ local function setup()
 		local vy = v.Y
 		-- Client state flags for other effects
 		local isSprinting = (cs:FindFirstChild("IsSprinting") and cs.IsSprinting.Value) or false
+		local isFirstPerson = isFirstPersonForStrafeTilt()
 		-- Ledge hang uses Physics/Air; do not treat as airborne for shake/wind
 		local airborne = (not isLedgeHanging) and (state.humanoid.FloorMaterial == Enum.Material.Air)
 		local fpWeaponFallStable = FpWeaponFallCamera.shouldStabilize(player, state.character, state.humanoid, state.root)
@@ -402,7 +403,33 @@ local function setup()
 		end
 		-- Smooth sprint bonus by speed to avoid discrete step at base+bonus
 		local sprintWeight = (isSprinting and speedFrac) or 0
-		local targetFov = math.min(fovCap, baseTarget + (state.fovSprintBonus * sprintWeight))
+		local sprintBonusMul = 1
+		if
+			Config.CameraFovFpSprintNarrowEnabled ~= false
+			and isFirstPerson
+			and isSprinting
+			and Config.CameraFovFpSprintSuppressBonus ~= false
+		then
+			sprintBonusMul = 0
+		end
+		local targetFov = math.min(fovCap, baseTarget + (state.fovSprintBonus * sprintWeight * sprintBonusMul))
+
+		if Config.CameraFovFpSprintNarrowEnabled ~= false and isFirstPerson and isSprinting then
+			local excessScale = Config.CameraFovFpSprintExcessScale
+			if excessScale == nil then
+				excessScale = 0.26
+			end
+			excessScale = math.clamp(excessScale, 0, 2)
+			targetFov = state.baseFov + (targetFov - state.baseFov) * excessScale
+			local extra = Config.CameraFovFpSprintExtraReduceDegrees
+			if type(extra) == "number" and extra > 0 then
+				targetFov = targetFov - extra * sprintWeight
+			end
+			local minFp = Config.CameraFovFpSprintMinFov
+			if type(minFp) == "number" then
+				targetFov = math.max(minFp, targetFov)
+			end
+		end
 
 		-- Asymmetric smoothing: ramp up slower, decay faster
 		local cur = camera.FieldOfView
@@ -427,7 +454,7 @@ local function setup()
 		local tiltTargetRad = 0
 		if
 			Config.CameraStrafeTiltEnabled ~= false
-			and isFirstPersonForStrafeTilt()
+			and isFirstPerson
 			and not isLedgeHanging
 			and not (fpWeaponFallStable and Config.CameraStabilizeFpWeaponFallDisableStrafeTilt ~= false)
 		then

@@ -61,15 +61,17 @@ function AirControl.apply(character, dt)
 		return
 	end
 	local accel = (Config.AirControlAccelerate or 150)
-	local accelSpeed = math.min(addSpeed, accel * dt, maxAddPerTick)
+	-- Subtle wish-speed scaling (keeps same units as legacy accel*dt; avoids over-boosting low dt).
+	local wishScale = math.clamp(wishSpeed / 35, 0.65, 1.35)
+	local accelSpeed = math.min(addSpeed, accel * wishScale * dt, maxAddPerTick)
 
-	-- Optional strafe assist: if nearly perpendicular to velocity, use higher accel
-	if horiz.Magnitude > 0.05 then
-		local cosTheta = math.abs(horiz.Unit:Dot(wish))
-		if cosTheta < 0.2 then
-			local bonus = (Config.AirStrafeAccelerate or 50) * dt
-			accelSpeed = math.min(addSpeed, accelSpeed + bonus)
-		end
+	-- Strafe curve: more acceleration when wish is lateral to velocity (smooth CS/Quake-style air strafe).
+	local horizMag = horiz.Magnitude
+	if horizMag > 0.05 then
+		local strafeFactor = 1 - math.abs(horiz.Unit:Dot(wish))
+		strafeFactor = math.clamp(strafeFactor, 0, 1)
+		local strafeBonus = (Config.AirStrafeAccelerate or 50) * dt * strafeFactor
+		accelSpeed = math.min(addSpeed, accelSpeed + strafeBonus)
 	end
 
 	local newHoriz = horiz + (wish * accelSpeed)

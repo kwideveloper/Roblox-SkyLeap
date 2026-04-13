@@ -329,32 +329,43 @@ Config.CameraAlignHeadYawDeg = 60
 Config.CameraAlignHeadPitchDeg = 30
 Config.CameraAlignBodyYawDeg = 45
 
--- Bunny hop (OPTIMIZED FOR HIGH VELOCITY GAINS)
-Config.BunnyHopWindowSeconds = 0.18 -- INCREASED: More forgiving timing window for better responsiveness
-Config.BunnyHopMaxStacks = 5 -- INCREASED: More stacking potential for longer chains
-Config.BunnyHopBaseBoost = 4 -- BALANCED: Good initial boost without being overwhelming
-Config.BunnyHopPerStackBoost = 3 -- BALANCED: Steady progression per stack for smooth acceleration to cap
-Config.BunnyHopMomentumBonusBase = 6 -- INCREASED: More momentum gain for sustained speed
-Config.BunnyHopMomentumBonusPerStack = 5 -- INCREASED: Better momentum scaling for velocity maintenance
-Config.BunnyHopDirectionCarry = 0.4 -- INCREASED: Preserve more lateral momentum for better flow
-Config.BunnyHopOppositeCancel = 0.6 -- REDUCED: Less cancellation to maintain more speed
-Config.BunnyHopPerpDampOnFlip = 0.5 -- REDUCED: Preserve even more perpendicular momentum
+-- Bunny hop (chain jumps right after landing + strafe in air; see BunnyHop.lua + AirControl.lua)
+Config.BunnyHopWindowSeconds = 0.15 -- Jump soon after touch; tune for skill vs comfort
+Config.BunnyHopMaxStacks = 5 -- More stacking potential for longer chains
+Config.BunnyHopBaseBoost = 6.5 -- Per-hop horizontal kick
+Config.BunnyHopPerStackBoost = 4 -- Extra per stack in a chain
+Config.BunnyHopStrafeBonus = 0.28 -- Extra when strafing vs travel direction (0 = off)
+Config.BunnyHopMomentumBonusBase = 7 -- Momentum gain for sustained speed
+Config.BunnyHopMomentumBonusPerStack = 5.5 -- Momentum scaling with chain depth
+Config.BunnyHopDirectionCarry = 0.45 -- Preserve lateral momentum for flow
+Config.BunnyHopOppositeCancel = 0.6 -- How much backward intent cancels forward speed
+Config.BunnyHopPerpDampOnFlip = 0.5 -- Perpendicular damping on sharp direction flip
 -- Hard reorientation on hop: completely retarget horizontal velocity to desired direction, preserving magnitude
 Config.BunnyHopReorientHard = false
-Config.BunnyHopLockSeconds = 0.1 -- REDUCED: Even shorter lock for maximum fluidity
-Config.BunnyHopMaxAddPerHop = 12 -- INCREASED: Much higher speed gain per hop for constant velocity buildup
-Config.BunnyHopTotalSpeedCap = 90 -- BALANCED: Sweet spot for exciting but controlled bunny hop gameplay
+-- After a hop, reapply target horizontal velocity for this many physics steps (PostSimulation).
+Config.BunnyHopPostAssistSteps = 8
+-- Legacy fallback if BunnyHopPostAssistSteps is nil: floor(LockSeconds * 70)
+Config.BunnyHopLockSeconds = 0.1
+Config.BunnyHopMaxAddPerHop = 22 -- Cap on extra horizontal studs/s per hop (additive delta)
+Config.BunnyHopTotalSpeedCap = 90 -- Total horizontal speed cap while chaining
 -- NEW: Sprint requirement settings
 Config.BunnyHopRequireSprint = false -- Allow bunny hop without sprinting for casual use
-Config.BunnyHopSprintBonus = 1.3 -- BALANCED: Good sprint bonus without being too powerful
+Config.BunnyHopSprintBonus = 1.35 -- Sprinting while hopping hits a bit harder
+-- Coast: after N chained hops, impulse follows current speed without holding W (strafe / camera only).
+Config.BunnyHopCoastEnabled = true
+Config.BunnyHopCoastMinStacks = 2 -- 2 = after first chain hop you can release W; set 1 for earlier coast
+Config.BunnyHopCoastMinSpeed = 1.2 -- studs/s horizontal; below this still need input to start a hop
+Config.BunnyHopCoastInputEpsilon = 0.08 -- MoveDirection below this counts as "no keys" for coast
+Config.BunnyHopCoastStrafeExtraCarry = 0.14 -- While coasting with A/D, blend more toward travel (keep momentum)
+Config.BunnyHopCoastCameraSteerMix = 0.1 -- 0..1: with no keys, blend camera yaw into hop direction (0 = pure velocity)
 
 -- Air control (Quake/CS-style) - OPTIMIZED FOR BUNNY HOP VELOCITY MAINTENANCE
 Config.AirControlEnabled = true
 Config.AirControlUseCameraFacing = true -- when no MoveDirection, use camera facing
-Config.AirControlAccelerate = 40 -- INCREASED: Better acceleration for velocity maintenance
-Config.AirStrafeAccelerate = 180 -- BALANCED: Good strafe acceleration without being too aggressive
-Config.AirControlMaxWishSpeed = 45 -- BALANCED: Good speed contribution without overwhelming acceleration
-Config.AirControlMaxAddPerTick = 20 -- BALANCED: Reasonable safety cap for controlled acceleration
+Config.AirControlAccelerate = 54 -- Horizontal air push; scaled slightly by wish speed in AirControl.lua
+Config.AirStrafeAccelerate = 275 -- Extra along wish when velocity is lateral to input
+Config.AirControlMaxWishSpeed = 50
+Config.AirControlMaxAddPerTick = 26
 Config.AirControlTotalSpeedCap = 90 -- BALANCED: Match bunny hop cap for consistent controlled gameplay
 
 -- LaunchPad (trampoline) defaults
