@@ -8,6 +8,7 @@ local RunService = game:GetService("RunService")
 local Config = require(ReplicatedStorage:WaitForChild("DeathSpectate"):WaitForChild("Config"))
 local SniperConfig = require(ReplicatedStorage:WaitForChild("Sniper"):WaitForChild("Config"))
 local ViewModelClient = require(ReplicatedStorage:WaitForChild("Sniper"):WaitForChild("ViewModelClient"))
+local SniperViewModelAppearance = require(ReplicatedStorage:WaitForChild("Sniper"):WaitForChild("SniperViewModelAppearance"))
 
 local player = Players.LocalPlayer
 
@@ -189,7 +190,12 @@ local function beginSpectate(payload: any)
 	if cam then
 		baseFov = cam.FieldOfView
 		cam.CameraType = Enum.CameraType.Scriptable
-		local vm = ViewModelClient.createSpectatorViewModelClone(SniperConfig.SniperViewModelName)
+		local vmTemplate = killer:GetAttribute(SniperViewModelAppearance.AttributeViewModelTemplateId)
+		local vmSkin = killer:GetAttribute(SniperViewModelAppearance.AttributeSkinId)
+		local vm = ViewModelClient.createSpectatorViewModelClone(
+			(typeof(vmTemplate) == "string" and vmTemplate) or nil,
+			(typeof(vmSkin) == "string" and vmSkin) or nil
+		)
 		if vm then
 			vm.Parent = cam
 			spectateVmClone = vm

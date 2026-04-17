@@ -111,6 +111,7 @@ ensureRemoteEvent(remotesFolder, "SniperRequestFire")
 ensureRemoteEvent(remotesFolder, "SniperLaserFx")
 ensureRemoteEvent(remotesFolder, "SniperAudioFeedback")
 ensureRemoteEvent(remotesFolder, "DeathSpectatePayload")
+ensureRemoteEvent(remotesFolder, "SetSniperViewModelLoadout")
 
 -- Global leaderboards
 ensureRemoteEvent(remotesFolder, "LeaderboardsUpdate")

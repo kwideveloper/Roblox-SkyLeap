@@ -12,6 +12,7 @@ local SniperFirstPersonGate = require(script.Parent.SniperFirstPersonGate)
 local SniperLoadoutState = require(script.Parent.SniperLoadoutState)
 local RigHelper = require(script.Parent.ViewModelAnimationRigHelper)
 local SniperViewModelAnimator = require(script.Parent.SniperViewModelAnimator)
+local SniperViewModelAppearance = require(script.Parent.SniperViewModelAppearance)
 
 local RENDER_STEP_NAME = "SkyLeapSniperViewModel"
 
@@ -148,7 +149,72 @@ local function suppressWorldArmsForSniperViewmodel(char: Model)
 	end
 end
 
-local function prepareClone(clone: Model)
+local function sortedRootModels(folder: Instance): { Model }
+	local t: { Model } = {}
+	for _, c in ipairs(folder:GetChildren()) do
+		if c:IsA("Model") then
+			table.insert(t, c)
+		end
+	end
+	table.sort(t, function(a, b)
+		return a.Name < b.Name
+	end)
+	return t
+end
+
+-- 1) attach() override 2) player attribute 3) first Model under folder (alphabetical) 4) Config.SniperViewModelName.
+local function resolveViewModelTemplateForPlayer(folder: Instance, player: Player, attachOverride: string?): (string, Model?)
+	if type(attachOverride) == "string" and attachOverride ~= "" then
+		local m = resolveTemplateModel(folder, attachOverride)
+		if m then
+			return attachOverride, m
+		end
+	end
+	local attrId = SniperViewModelAppearance.normalizeId(player:GetAttribute(SniperViewModelAppearance.AttributeViewModelTemplateId))
+	if attrId ~= "" then
+		local m = resolveTemplateModel(folder, attrId)
+		if m then
+			return attrId, m
+		end
+	end
+	local roots = sortedRootModels(folder)
+	if #roots > 0 then
+		return roots[1].Name, roots[1]
+	end
+	local cfgName = Config.SniperViewModelName
+	if type(cfgName) == "string" and cfgName ~= "" then
+		local m = resolveTemplateModel(folder, cfgName)
+		if m then
+			return cfgName, m
+		end
+	end
+	return "", nil
+end
+
+-- Spectator / no Player: explicit template id, then first root Model, then Config.
+local function resolveViewModelTemplateExplicit(folder: Instance, templateId: string?): (string, Model?)
+	local id = SniperViewModelAppearance.normalizeId(templateId)
+	if id ~= "" then
+		local m = resolveTemplateModel(folder, id)
+		if m then
+			return id, m
+		end
+	end
+	local roots = sortedRootModels(folder)
+	if #roots > 0 then
+		return roots[1].Name, roots[1]
+	end
+	local cfgName = Config.SniperViewModelName
+	if type(cfgName) == "string" and cfgName ~= "" then
+		local m = resolveTemplateModel(folder, cfgName)
+		if m then
+			return cfgName, m
+		end
+	end
+	return "", nil
+end
+
+local function prepareClone(clone: Model, skinId: string)
 	stripViewmodelClone(clone)
 	if not ensurePrimaryPart(clone) then
 		return false
@@ -167,6 +233,12 @@ local function prepareClone(clone: Model)
 				d.CastShadow = false
 			end
 		end
+	end
+	SniperViewModelAppearance.applyGunSkinSwap(clone, skinId)
+	if useAnimatedRig then
+		RigHelper.applyAnchorStrategyForAnimation(clone, primary)
+	else
+		RigHelper.applyStaticAnchors(clone)
 	end
 	return true
 end
@@ -219,12 +291,14 @@ local states: {
 	[Tool]: {
 		tool: Tool,
 		player: Player,
-		modelName: string,
+		attachTemplateOverride: string?,
 		clone: Model?,
 		animHandle: SniperViewModelAnimator.AnimatorHandle?,
 		pointerSuppressActive: boolean?,
 		savedMouseTargetFilter: Instance?,
 		mouseFilterApplied: boolean?,
+		_visualKey: string?,
+		attrConns: { RBXScriptConnection }?,
 	},
 } = {}
 
@@ -305,26 +379,18 @@ local function shouldShowViewmodel(state: { tool: Tool, player: Player }): boole
 	return SniperFirstPersonGate.isCameraCloseForFirstPerson(plr)
 end
 
-local function findTemplate(modelName: string): Model?
-	local folder = findViewModelsFolder()
-	if not folder then
-		return nil
-	end
-	return resolveTemplateModel(folder, modelName)
-end
-
-local function updateOne(
-	state: {
-		tool: Tool,
-		player: Player,
-		modelName: string,
-		clone: Model?,
-		animHandle: SniperViewModelAnimator.AnimatorHandle?,
-		pointerSuppressActive: boolean?,
-		savedMouseTargetFilter: Instance?,
-		mouseFilterApplied: boolean?,
-	}
-)
+local function updateOne(state: {
+	tool: Tool,
+	player: Player,
+	attachTemplateOverride: string?,
+	clone: Model?,
+	animHandle: SniperViewModelAnimator.AnimatorHandle?,
+	pointerSuppressActive: boolean?,
+	savedMouseTargetFilter: Instance?,
+	mouseFilterApplied: boolean?,
+	_visualKey: string?,
+	attrConns: { RBXScriptConnection }?,
+})
 	if not shouldShowViewmodel(state) then
 		destroyClone(state)
 		return
@@ -335,14 +401,24 @@ local function updateOne(
 		return
 	end
 
-	local template = findTemplate(state.modelName)
+	local folder = findViewModelsFolder()
+	if not folder then
+		destroyClone(state)
+		return
+	end
+
+	local resolvedName, template = resolveViewModelTemplateForPlayer(folder, state.player, state.attachTemplateOverride)
+	local desiredSkin = SniperViewModelAppearance.normalizeId(state.player:GetAttribute(SniperViewModelAppearance.AttributeSkinId))
+	local overrideKey = state.attachTemplateOverride or ""
+	local visualKey = resolvedName .. "\0" .. desiredSkin .. "\0" .. overrideKey
+
 	if not template then
 		if not warnedMissingTemplate then
 			warnedMissingTemplate = true
 			warn(
-				("[Sniper] ViewModel: no template Model %q under ReplicatedStorage.%s (folder name is case-insensitive)."):format(
-					state.modelName,
-					Config.ViewModelsFolderName or "ViewModels"
+				("[Sniper] ViewModel: no template Model under ReplicatedStorage.%s (set attribute %s, Config.SniperViewModelName, or add a Model child)."):format(
+					Config.ViewModelsFolderName or "ViewModels",
+					SniperViewModelAppearance.AttributeViewModelTemplateId
 				)
 			)
 		end
@@ -350,15 +426,22 @@ local function updateOne(
 		return
 	end
 
+	if state.clone then
+		if not state.clone.Parent or state._visualKey ~= visualKey then
+			destroyClone(state)
+		end
+	end
+
 	if not state.clone or not state.clone.Parent then
 		destroyClone(state)
 		local clone = template:Clone()
 		clone.Name = "SniperViewModelActive"
-		if not prepareClone(clone) then
+		if not prepareClone(clone, desiredSkin) then
 			clone:Destroy()
 			return
 		end
-		warnIfViewmodelNotFacingWorldZ(clone, state.modelName)
+		state._visualKey = visualKey
+		warnIfViewmodelNotFacingWorldZ(clone, resolvedName)
 		if Config.SniperViewModelPivotUsesCameraBone ~= false then
 			local bn = Config.SniperViewModelCameraBoneName or "CameraBone"
 			local b = clone:FindFirstChild(bn, true)
@@ -472,15 +555,20 @@ function ViewModelClient.solveViewmodelWorldPivot(clone: Model, camCf: CFrame, o
 	return solveViewmodelWorldPivot(clone, camCf, offset)
 end
 
-function ViewModelClient.createSpectatorViewModelClone(modelName: string?): Model?
-	local name = modelName or Config.SniperViewModelName or "Sniper"
-	local template = findTemplate(name)
+-- viewModelTemplateId: ReplicatedStorage ViewModels child Model name, or nil to use Config / first Model. skinId: optional cosmetic under template.Skins.
+function ViewModelClient.createSpectatorViewModelClone(viewModelTemplateId: string?, skinId: string?): Model?
+	local folder = findViewModelsFolder()
+	if not folder then
+		return nil
+	end
+	local resolvedName, template = resolveViewModelTemplateExplicit(folder, viewModelTemplateId)
 	if not template then
 		return nil
 	end
+	local skin = SniperViewModelAppearance.normalizeId(skinId)
 	local clone = template:Clone()
 	clone.Name = "SniperViewModelSpectator"
-	if not prepareClone(clone) then
+	if not prepareClone(clone, skin) then
 		clone:Destroy()
 		return nil
 	end
@@ -491,7 +579,7 @@ function ViewModelClient.createSpectatorViewModelClone(modelName: string?): Mode
 			camBoneRelCache[clone] = clone:GetPivot():ToObjectSpace(b.CFrame)
 		end
 	end
-	warnIfViewmodelNotFacingWorldZ(clone, name)
+	warnIfViewmodelNotFacingWorldZ(clone, resolvedName)
 	return clone
 end
 
@@ -501,26 +589,49 @@ function ViewModelClient.forgetViewmodelClone(clone: Model?)
 	end
 end
 
+-- viewModelName: optional Studio template name override (highest priority). Otherwise Player attributes + Config + first ViewModels child.
 function ViewModelClient.attach(tool: Tool, player: Player, viewModelName: string?)
 	if tool:GetAttribute("_SniperViewModelAttached") then
 		return
 	end
 	tool:SetAttribute("_SniperViewModelAttached", true)
 
+	local override: string? = nil
+	if type(viewModelName) == "string" and viewModelName ~= "" then
+		override = viewModelName
+	end
+
 	local state = {
 		tool = tool,
 		player = player,
-		modelName = viewModelName or Config.SniperViewModelName or "Sniper",
+		attachTemplateOverride = override,
 		clone = nil,
 		animHandle = nil,
 		pointerSuppressActive = false,
 		savedMouseTargetFilter = nil,
 		mouseFilterApplied = false,
+		_visualKey = nil,
+		attrConns = {},
 	}
 	states[tool] = state
+
+	local function invalidateVisualKey()
+		state._visualKey = nil
+	end
+	table.insert(state.attrConns, player:GetAttributeChangedSignal(SniperViewModelAppearance.AttributeSkinId):Connect(invalidateVisualKey))
+	table.insert(state.attrConns, player:GetAttributeChangedSignal(SniperViewModelAppearance.AttributeViewModelTemplateId):Connect(invalidateVisualKey))
+
 	bindRenderStep()
 
 	tool.Destroying:Connect(function()
+		if state.attrConns then
+			for _, c in ipairs(state.attrConns) do
+				pcall(function()
+					c:Disconnect()
+				end)
+			end
+			state.attrConns = nil
+		end
 		destroyClone(state)
 		states[tool] = nil
 		if next(states) == nil then

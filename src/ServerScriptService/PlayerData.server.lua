@@ -31,6 +31,8 @@ local function onPlayerAdded(player)
 	-- OPTIMIZED: Load profile once and share across all systems
 	local p = PlayerProfile.load(player.UserId)
 
+	PlayerProfile.syncSniperViewModelAttributesToPlayer(player)
+
 	local stats = Instance.new("Folder")
 	stats.Name = "leaderstats"
 	stats.Parent = player

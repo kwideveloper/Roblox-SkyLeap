@@ -60,8 +60,9 @@ return {
 	SniperMuzzleHeatLingerSeconds = 1.65,
 	SniperMuzzleHeatLingerRate = 8,
 
-	-- First-person viewmodel (client). Template: ReplicatedStorage.[ViewModelsFolderName].[SniperViewModelName] (Model; keep ViewModels as Studio assets only, no scripts).
-	-- Shown when Sniper is equipped and camera orbit distance is small (strict min-zoom OR below MaxOrbitDistance).
+	-- First-person viewmodel (client). Templates: Folder ReplicatedStorage.[ViewModelsFolderName] contains one or more root Models (e.g. Sniper).
+	-- Resolution order: Tool attach() override → Player SkyLeapSniperViewModelId → first root Model under ViewModels (alphabetical) → SniperViewModelName (if non-empty).
+	-- Inside each template: Model "Gun" = base weapon; optional Folder "Skins" holds cosmetic weapon Models; equipped skin = Player attribute SkyLeapSniperSkinId (see SniperViewModelAppearance).
 	SniperViewModelEnabled = true,
 	ViewModelsFolderName = "ViewModels",
 	SniperViewModelName = "Sniper",

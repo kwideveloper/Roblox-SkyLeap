@@ -1,6 +1,7 @@
 -- Centralized player profile management using a single DataStore schema
 
 local DataStoreService = game:GetService("DataStoreService")
+local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local function readProfilePacing()
@@ -68,6 +69,10 @@ local function defaultProfile()
 				outfitId = nil,
 				trailId = nil,
 				handTrailId = nil,
+				-- Sniper first-person: ReplicatedStorage.ViewModels child Model name, or nil = client resolves (first template / Config).
+				sniperViewModelTemplateId = nil,
+				-- Name of a Model under that template's "Skins" folder; nil or "" = base Gun mesh.
+				sniperSkinId = nil,
 			},
 		},
 		purchases = {
@@ -117,7 +122,30 @@ local function migrate(profile)
 	profile.progression.completedLevels = profile.progression.completedLevels or {}
 	profile.progression.levelTimes = profile.progression.levelTimes or {}
 	profile.cosmetics = profile.cosmetics
-		or { owned = {}, equipped = { outfitId = nil, trailId = nil, handTrailId = nil } }
+		or {
+			owned = {},
+			equipped = {
+				outfitId = nil,
+				trailId = nil,
+				handTrailId = nil,
+				sniperViewModelTemplateId = nil,
+				sniperSkinId = nil,
+			},
+		}
+	profile.cosmetics.equipped = profile.cosmetics.equipped
+		or {
+			outfitId = nil,
+			trailId = nil,
+			handTrailId = nil,
+			sniperViewModelTemplateId = nil,
+			sniperSkinId = nil,
+		}
+	if profile.cosmetics.equipped.sniperViewModelTemplateId == "" then
+		profile.cosmetics.equipped.sniperViewModelTemplateId = nil
+	end
+	if profile.cosmetics.equipped.sniperSkinId == "" then
+		profile.cosmetics.equipped.sniperSkinId = nil
+	end
 	profile.purchases = profile.purchases or { developerProducts = {}, gamePasses = {} }
 	profile.settings = profile.settings or { cameraFov = nil, uiScale = nil }
 	profile.rewards = profile.rewards or { playtimeClaimed = {}, lastPlaytimeDay = nil, playtimeAccumulatedSeconds = 0 }
@@ -125,6 +153,15 @@ local function migrate(profile)
 	profile.rewards.lastPlaytimeDay = profile.rewards.lastPlaytimeDay or nil
 	profile.rewards.playtimeAccumulatedSeconds = tonumber(profile.rewards.playtimeAccumulatedSeconds) or 0
 	profile.meta = profile.meta or { createdAt = os.time(), updatedAt = os.time() }
+	if profile.cosmetics and profile.cosmetics.equipped then
+		local e = profile.cosmetics.equipped
+		if e.sniperViewModelTemplateId ~= nil and type(e.sniperViewModelTemplateId) ~= "string" then
+			e.sniperViewModelTemplateId = nil
+		end
+		if e.sniperSkinId ~= nil and type(e.sniperSkinId) ~= "string" then
+			e.sniperSkinId = nil
+		end
+	end
 	return profile
 end
 
@@ -915,6 +952,76 @@ function PlayerProfile.getOwnedHandTrails(userId)
 	end
 
 	return ownedList
+end
+
+function PlayerProfile.getSniperViewModelCosmetics(userId)
+	userId = tostring(userId)
+	local profile = PlayerProfile.load(userId)
+	local e = profile.cosmetics and profile.cosmetics.equipped or {}
+	local tid = e.sniperViewModelTemplateId
+	local sid = e.sniperSkinId
+	if type(tid) ~= "string" then
+		tid = nil
+	end
+	if type(sid) ~= "string" then
+		sid = nil
+	end
+	return tid, sid
+end
+
+-- Push persisted sniper cosmetics to the Player instance (replicates to client). Call after load and after setSniperViewModelCosmetics.
+function PlayerProfile.syncSniperViewModelAttributesToPlayer(player)
+	local sniperFolder = ReplicatedStorage:FindFirstChild("Sniper")
+	local appearanceMod = sniperFolder and sniperFolder:FindFirstChild("SniperViewModelAppearance")
+	if not appearanceMod or not appearanceMod:IsA("ModuleScript") then
+		return
+	end
+	local okAppear, appear = pcall(require, appearanceMod)
+	if not okAppear or type(appear) ~= "table" then
+		return
+	end
+	local tid, sid = PlayerProfile.getSniperViewModelCosmetics(player.UserId)
+	player:SetAttribute(appear.AttributeViewModelTemplateId, tid or "")
+	player:SetAttribute(appear.AttributeSkinId, sid or "")
+end
+
+-- templateId / skinId: pass nil to leave that field unchanged; pass "" to clear (fall back to Config / base Gun).
+function PlayerProfile.setSniperViewModelCosmetics(userId, templateId, skinId)
+	userId = tostring(userId)
+	local profile = PlayerProfile.load(userId)
+	profile.cosmetics = profile.cosmetics or { owned = {}, equipped = {} }
+	profile.cosmetics.equipped = profile.cosmetics.equipped or {}
+
+	local function norm(s)
+		if s == nil then
+			return nil
+		end
+		if type(s) ~= "string" then
+			return nil
+		end
+		local t = string.gsub(string.gsub(s, "^%s+", ""), "%s+$", "")
+		if t == "" then
+			return nil
+		end
+		return t
+	end
+
+	local e = profile.cosmetics.equipped
+	if templateId ~= nil then
+		e.sniperViewModelTemplateId = norm(templateId)
+	end
+	if skinId ~= nil then
+		e.sniperSkinId = norm(skinId)
+	end
+
+	local success = forceSave(userId)
+	for _, plr in ipairs(Players:GetPlayers()) do
+		if tostring(plr.UserId) == userId then
+			PlayerProfile.syncSniperViewModelAttributesToPlayer(plr)
+			break
+		end
+	end
+	return success
 end
 
 return PlayerProfile
