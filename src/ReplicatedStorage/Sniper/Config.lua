@@ -135,6 +135,57 @@ return {
 	SniperViewModelAnimCrossFade = 0.12,
 	SniperViewModelAnimRecoilFadeIn = 0.04,
 	SniperViewModelAnimRecoilSpeed = 1,
+	-- ADS hold (right click): if a BasePart named `Aim` exists under the viewmodel Gun, blend the viewmodel offset so `Aim`
+	-- aligns toward the camera center while preserving camera look direction (CameraBone basis still matches camera).
+	SniperViewModelAimPartName = "Aim",
+	SniperViewModelAimInSeconds = 0.12,
+	SniperViewModelAimOutSeconds = 0.05,
+	-- Scope mode (when ADS reaches full alignment): hide viewmodel + show scope overlay + FOV zoom override.
+	-- Per-Gun attributes (Model `Gun`) supported by SniperClient:
+	--   `SniperAimEnabled` (bool): true/false to allow ADS.
+	--   `SniperAimZoomCount` (number): how many zoom levels to use from SniperScopeZoomLevels (prefix count).
+	SniperScopeEnabled = true,
+	-- Legacy optional key cycle (current implementation uses mouse wheel while scoped).
+	SniperScopeZoomCycleKeyCode = Enum.KeyCode.Z,
+	-- Scope zoom levels shown to the player (without FOV zoom): x2, x3, x4, x5, x10.
+	SniperScopeZoomLevels = { 2, 3, 4, 5, 10 },
+	-- What the player sees in the scope label (same count/order as SniperScopeZoomLevels).
+	-- Keep this if you want to show values different from real behavior.
+	SniperScopeZoomDisplayLevels = { 2, 3, 4, 5, 10 },
+	-- Use FOV-based zoom (recommended). If false, only forward camera offset model is used.
+	SniperScopeUseFovZoom = true,
+	SniperScopeBaseFov = 70,
+	SniperScopeZoomInSeconds = 0.2,
+	SniperScopeZoomOutSeconds = 0.14,
+	SniperScopeMouseSensitivity = 0.35,
+	-- Optional scoped post-processing (global, whole-screen). Keep false for outside-mask-only effect.
+	SniperScopePostFxEnabled = false,
+	SniperScopeBlurSize = 10,
+	SniperScopeDofFarIntensity = 0.45,
+	SniperScopeDofNearIntensity = 0.28,
+	-- UI-only outside mask darkness (applies only outside the circular scope area).
+	SniperScopeOutsideMaskTransparency = 0.3,
+	-- Camera push along look direction (studs), driven by current aim distance and selected zoom level.
+	-- If true, per-frame offset ~= distance * (1 - 1/zoomLevel), clamped by Min/Max below.
+	SniperScopeZoomUseDistanceModel = true,
+	-- When center ray hits nothing, use this virtual distance for zoom offset estimation.
+	SniperScopeZoomDistanceFallbackStuds = 220,
+	SniperScopeZoomForwardOffsetMinStuds = 0,
+	SniperScopeZoomForwardOffsetMaxStuds = 140,
+	-- Legacy/manual mode (used only when SniperScopeZoomUseDistanceModel = false).
+	SniperScopeZoomForwardOffsetStudsLevels = { 0.8, 1.7, 2.8, 4.2, 8.5 },
+	-- Small black ring around center lens; keep subtle to avoid overblocking peripheral.
+	SniperScopeRingThicknessPx = 6,
+	-- Consider scope "fully aimed" once ADS blend reaches this value.
+	SniperScopeEnterBlendThreshold = 0.985,
+	-- Scope camera motion (applied while scoped).
+	SniperScopeBreathPitchDegrees = 0.055,
+	SniperScopeBreathYawDegrees = 0.04,
+	SniperScopeBreathSpeed = 0.9,
+	-- Extra camera kick when firing while scoped.
+	SniperScopeRecoilKickPitchDegrees = 1.2,
+	SniperScopeRecoilKickYawDegrees = 0.22,
+	SniperScopeRecoilRecoveryPerSecond = 8.5,
 
 	-- Crosshair (client): only while Sniper is equipped AND camera is first-person (same distance rule as SniperViewModel / SniperFirstPersonGate).
 	-- LockCenter hides the OS pointer and stops hover cursors over HUD; set false if you need free mouse while aiming.
@@ -170,7 +221,7 @@ return {
 	-- Lock camera to first person while the sniper slot is selected (virtual loadout).
 	SniperForceFirstPersonWhileSniperActive = true,
 	-- Server: verbose hit/kill logs (ray target, resolve, health, victim). Set true while debugging PvP; set false in production.
-	SniperDebugApplyHit = true,
+	SniperDebugApplyHit = false,
 	-- Server: viewport/camera origin must stay within this distance of Head (anti-cheat). FP camera is usually <6; keep margin for rigs.
 	SniperMaxFireOriginFromHeadStuds = 72,
 	-- If true (recommended), hitscan uses ViewportPointToRay(center) origin + direction — same line as the GUI crosshair.
@@ -323,6 +374,10 @@ return {
 
 	-- CollectionService tag for destructible test targets (see EnemyDummySetup.server.lua)
 	EnemyTag = "Enemy",
+	-- CollectionService tag required (alongside EnemyTag) for movement/AI logic.
+	EnemyAiTag = "IA",
+	-- Seconds before an eliminated enemy becomes active again.
+	EnemyRespawnSeconds = 5,
 
 	-- Default health for auto-setup dummies (Humanoid or attribute on BasePart)
 	EnemyDefaultHealth = 100,
@@ -410,4 +465,23 @@ return {
 	-- Other players: short 3D cue at the shooter's Barrel when they fire (uses SniperLaserFx).
 	FireSoundForOthersId = "",
 	FireSoundForOthersVolume = 0.45,
+
+	-- Kill rewards / streak HUD (global service; sniper wired by default, other combat systems can report kills too).
+	KillRewardEnabled = true,
+	KillRewardWindowSeconds = 6.0,
+	KillRewardBaseCoins = 20,
+	KillRewardRapidBonusStep = 5,
+	KillRewardRapidBonusMax = 30,
+	KillRewardHeadshotBonus = 10,
+	KillRewardMultiKillBonusDouble = 10,
+	KillRewardMultiKillBonusTriple = 20,
+	KillRewardMultiKillBonusQuadra = 35,
+	KillRewardMultiKillBonusPenta = 50,
+	-- Extra bonus when a single bullet kills 2+ targets (Collateral).
+	KillRewardCollateralBonus = 40,
+	KillRewardCollateralPerExtraKill = 15,
+	-- At 6+ in the same window, each extra kill adds this many bonus coins and shows "N KILL STREAK".
+	KillRewardStreakPerKillBonus = 5,
+	-- Make reward coin burst a bit faster than normal CurrencyUpdated bursts.
+	KillRewardCoinAnimSpeedMultiplier = 1.35,
 }

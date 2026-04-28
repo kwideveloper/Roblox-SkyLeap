@@ -167,7 +167,8 @@ local CoinArrived = getOrCreateEvent("CoinArrived")
 local DiamondArrived = getOrCreateEvent("DiamondArrived")
 
 -- Animate individual coin/diamond flying to target (like original CurrencyUI)
-local function spawnCurrencyAt(parent, fromPos, toPos, baseSize, imageId, onArrive)
+local function spawnCurrencyAt(parent, fromPos, toPos, baseSize, imageId, onArrive, speedMultiplier)
+	speedMultiplier = math.max(0.5, tonumber(speedMultiplier) or 1)
 	local img = Instance.new("ImageLabel")
 	img.Name = "CurrencyFly"
 	img.BackgroundTransparency = 1
@@ -184,13 +185,13 @@ local function spawnCurrencyAt(parent, fromPos, toPos, baseSize, imageId, onArri
 	scale.Parent = img
 
 	-- Pop in animation
-	local tIn = TweenInfo.new(0.12 + math.random() * 0.06, Enum.EasingStyle.Back, Enum.EasingDirection.Out)
+	local tIn = TweenInfo.new((0.12 + math.random() * 0.06) / speedMultiplier, Enum.EasingStyle.Back, Enum.EasingDirection.Out)
 	local pop = 1.15 + math.random() * 0.2
 	TweenService:Create(scale, tIn, { Scale = pop }):Play()
 	TweenService:Create(img, tIn, { ImageTransparency = 0 }):Play()
 
 	-- Curved flight path to target
-	local tFly = TweenInfo.new(0.80 + math.random() * 0.35, Enum.EasingStyle.Quint, Enum.EasingDirection.Out)
+	local tFly = TweenInfo.new((0.80 + math.random() * 0.35) / speedMultiplier, Enum.EasingStyle.Quint, Enum.EasingDirection.Out)
 	local mid = UDim2.fromOffset(
 		(fromPos.X.Offset + toPos.X.Offset) * 0.5 + math.random(-40, 40),
 		(fromPos.Y.Offset + toPos.Y.Offset) * 0.5 + math.random(-20, 30)
@@ -199,7 +200,7 @@ local function spawnCurrencyAt(parent, fromPos, toPos, baseSize, imageId, onArri
 
 	-- Finish to target and fade
 	task.delay(tFly.Time, function()
-		local tOut = TweenInfo.new(0.25 + math.random() * 0.15, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+		local tOut = TweenInfo.new((0.25 + math.random() * 0.15) / speedMultiplier, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
 		TweenService:Create(img, tOut, { Position = toPos, ImageTransparency = 0.2 }):Play()
 		task.delay(tOut.Time + 0.02, function()
 			if type(onArrive) == "function" then
@@ -302,7 +303,9 @@ local function getTopScreenGui(inst)
 end
 
 -- Main function: spawn reward burst with animations (like original CurrencyUI)
-function RewardAnimations.spawnRewardBurst(amount, rewardType, sourcePosition, sourceButton)
+function RewardAnimations.spawnRewardBurst(amount, rewardType, sourcePosition, sourceButton, options)
+	options = options or {}
+	local speedMultiplier = math.max(0.5, tonumber(options.speedMultiplier) or 1)
 	local imageId = (rewardType == "Coins") and "rbxassetid://127484940327901" or "rbxassetid://134526683895571"
 	local targetAnchor = (rewardType == "Coins") and getCoinAnchor() or getDiamondAnchor()
 	local flashColor = (rewardType == "Coins") and Color3.fromRGB(50, 255, 50) or Color3.fromRGB(0, 255, 255)
@@ -344,7 +347,7 @@ function RewardAnimations.spawnRewardBurst(amount, rewardType, sourcePosition, s
 	local center = UDim2.fromOffset(centerX, centerY)
 
 	-- Play spawn sound
-	playUiSfx("CoinSpawn", 1.0)
+	playUiSfx("CoinSpawn", speedMultiplier)
 
 	-- Calculate target position
 	local targetPos = targetAnchor.AbsolutePosition
@@ -384,10 +387,10 @@ function RewardAnimations.spawnRewardBurst(amount, rewardType, sourcePosition, s
 	s.Scale = 0.8
 	s.Parent = txt
 
-	local tIn = TweenInfo.new(0.12, Enum.EasingStyle.Back, Enum.EasingDirection.Out)
+	local tIn = TweenInfo.new(0.12 / speedMultiplier, Enum.EasingStyle.Back, Enum.EasingDirection.Out)
 	TweenService:Create(s, tIn, { Scale = 1.12 }):Play()
 
-	local tOut = TweenInfo.new(0.6, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+	local tOut = TweenInfo.new(0.6 / speedMultiplier, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
 
 	-- Spawn individual currency items with scatter pattern
 	for i = 1, count do
@@ -397,7 +400,7 @@ function RewardAnimations.spawnRewardBurst(amount, rewardType, sourcePosition, s
 		local addThis = per + ((i <= remainder) and 1 or 0)
 
 		spawnCurrencyAt(parent, from, target, baseSize + math.random(-4, 8), imageId, function()
-			playUiSfx("CoinArrive", 1.0)
+			playUiSfx("CoinArrive", speedMultiplier)
 			-- Always bump the label for visual feedback
 			bumpCurrencyLabel(targetAnchor, flashColor)
 
@@ -425,17 +428,17 @@ function RewardAnimations.spawnRewardBurst(amount, rewardType, sourcePosition, s
 					end
 				end)
 			end
-		end)
+		end, speedMultiplier)
 	end
 end
 
 -- Convenience functions for specific currency types
-function RewardAnimations.spawnCoinBurst(amount, sourcePosition, sourceButton)
-	return RewardAnimations.spawnRewardBurst(amount, "Coins", sourcePosition, sourceButton)
+function RewardAnimations.spawnCoinBurst(amount, sourcePosition, sourceButton, options)
+	return RewardAnimations.spawnRewardBurst(amount, "Coins", sourcePosition, sourceButton, options)
 end
 
-function RewardAnimations.spawnDiamondBurst(amount, sourcePosition, sourceButton)
-	return RewardAnimations.spawnRewardBurst(amount, "Diamonds", sourcePosition, sourceButton)
+function RewardAnimations.spawnDiamondBurst(amount, sourcePosition, sourceButton, options)
+	return RewardAnimations.spawnRewardBurst(amount, "Diamonds", sourcePosition, sourceButton, options)
 end
 
 return RewardAnimations

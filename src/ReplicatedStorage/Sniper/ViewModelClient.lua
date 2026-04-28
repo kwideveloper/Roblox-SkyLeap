@@ -343,6 +343,43 @@ local function solveViewmodelWorldPivot(clone: Model, camCf: CFrame, offset: CFr
 	return target * rel:Inverse()
 end
 
+local function setViewmodelVisible(clone: Model, visible: boolean)
+	local alpha = visible and 0 or 1
+	for _, d in ipairs(clone:GetDescendants()) do
+		if d:IsA("BasePart") then
+			d.LocalTransparencyModifier = alpha
+		end
+	end
+end
+
+local function resolveAimPart(clone: Model): BasePart?
+	local gun = clone:FindFirstChild(SniperViewModelAppearance.GunModelName)
+	local aimPartName = Config.SniperViewModelAimPartName or "Aim"
+	if gun and gun:IsA("Model") then
+		local p = SniperWeaponPartResolve.findFirstBasePartNamed(gun, aimPartName)
+		if p then
+			return p
+		end
+	end
+	return SniperWeaponPartResolve.findFirstBasePartNamed(clone, aimPartName)
+end
+
+local function resolveAimedOffsetForClone(clone: Model, baseOffset: CFrame): (CFrame, boolean)
+	local aimPart = resolveAimPart(clone)
+	if not aimPart then
+		return baseOffset, false
+	end
+	local boneName = Config.SniperViewModelCameraBoneName or "CameraBone"
+	local bone = clone:FindFirstChild(boneName, true)
+	if not bone or not bone:IsA("BasePart") then
+		return baseOffset, false
+	end
+	-- Keep camera direction unchanged; shift only by local position delta so Gun/Aim lands on the camera target.
+	local localAimPos = bone.CFrame:PointToObjectSpace(aimPart.Position)
+	local aimedOffset = baseOffset * CFrame.new(-localAimPos)
+	return aimedOffset, true
+end
+
 local function setSniperViewmodelAttr(ch: Model?, on: boolean)
 	if not ch then
 		return
@@ -367,6 +404,10 @@ local states: {
 		mouseFilterApplied: boolean?,
 		_visualKey: string?,
 		attrConns: { RBXScriptConnection }?,
+		aimInputHeld: boolean?,
+		aimBlend: number?,
+		scopeActive: boolean?,
+		viewmodelHiddenForScope: boolean?,
 	},
 } = {}
 
@@ -425,6 +466,10 @@ local function destroyClone(state: { clone: Model?, animHandle: SniperViewModelA
 		state.clone:Destroy()
 		state.clone = nil
 	end
+	state.aimBlend = 0
+	state.scopeActive = false
+	state.viewmodelHiddenForScope = false
+	state.tool:SetAttribute("_SniperScopeActive", false)
 	setSniperViewmodelAttr(state.player.Character, false)
 end
 
@@ -542,6 +587,33 @@ local function updateOne(state: {
 	end
 
 	local offset = Config.SniperViewModelCameraCFrame or CFrame.new(0.1, -0.2, -0.75)
+	local targetAim = state.aimInputHeld == true
+	local aimIn = math.max(1e-3, tonumber(Config.SniperViewModelAimInSeconds) or 0.12)
+	local aimOut = math.max(1e-3, tonumber(Config.SniperViewModelAimOutSeconds) or 0.1)
+	local blend = math.clamp(tonumber(state.aimBlend) or 0, 0, 1)
+	local aimedOffset, hasAimPart = resolveAimedOffsetForClone(state.clone, offset)
+	if not hasAimPart then
+		targetAim = false
+	end
+	local dur = targetAim and aimIn or aimOut
+	if targetAim then
+		blend = math.min(1, blend + dt / dur)
+	else
+		blend = math.max(0, blend - dt / dur)
+	end
+	state.aimBlend = blend
+	offset = offset:Lerp(aimedOffset, blend)
+	local scopeThreshold = math.clamp(tonumber(Config.SniperScopeEnterBlendThreshold) or 0.985, 0.9, 0.9999)
+	local scopeActiveNow = (Config.SniperScopeEnabled ~= false)
+		and targetAim
+		and hasAimPart
+		and blend >= scopeThreshold
+	state.scopeActive = scopeActiveNow
+	state.tool:SetAttribute("_SniperScopeActive", scopeActiveNow)
+	if scopeActiveNow ~= (state.viewmodelHiddenForScope == true) then
+		state.viewmodelHiddenForScope = scopeActiveNow
+		setViewmodelVisible(state.clone, not scopeActiveNow)
+	end
 	if state.animHandle then
 		state.animHandle:step(cam, offset)
 	else
@@ -703,6 +775,10 @@ function ViewModelClient.attach(tool: Tool, player: Player, viewModelName: strin
 		mouseFilterApplied = false,
 		_visualKey = nil,
 		attrConns = {},
+		aimInputHeld = false,
+		aimBlend = 0,
+		scopeActive = false,
+		viewmodelHiddenForScope = false,
 	}
 	states[tool] = state
 
@@ -732,6 +808,19 @@ function ViewModelClient.attach(tool: Tool, player: Player, viewModelName: strin
 			renderBound = false
 		end
 	end)
+end
+
+function ViewModelClient.setAimHeld(tool: Tool, held: boolean)
+	local state = states[tool]
+	if not state then
+		return
+	end
+	state.aimInputHeld = held == true
+end
+
+function ViewModelClient.isScopeActive(tool: Tool): boolean
+	local state = states[tool]
+	return state ~= nil and state.scopeActive == true
 end
 
 return ViewModelClient

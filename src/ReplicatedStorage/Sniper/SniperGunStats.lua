@@ -10,6 +10,7 @@ export type GunStats = {
 	reloadDuration: number,
 	shotCooldown: number,
 	damage: number,
+	piercing: boolean,
 }
 
 local M = {}
@@ -27,10 +28,19 @@ M.GunAttrReloadTime = "ReloadTime"
 M.GunAttrDamage = "Damage"
 M.GunAttrFireRate = "FireRate"
 M.GunAttrShotCooldown = "ShotCooldown"
+M.GunAttrPiercing = "Piercing"
 
 local function numAttr(inst: Instance, name: string, default: number): number
 	local v = inst:GetAttribute(name)
 	if type(v) == "number" and v == v and v ~= math.huge and v ~= -math.huge then
+		return v
+	end
+	return default
+end
+
+local function boolAttr(inst: Instance, name: string, default: boolean): boolean
+	local v = inst:GetAttribute(name)
+	if type(v) == "boolean" then
 		return v
 	end
 	return default
@@ -82,6 +92,7 @@ function M.readFromGunModel(gun: Instance?): GunStats
 			reloadDuration = math.max(0.05, reloadDefault),
 			shotCooldown = math.max(0.02, shotCd),
 			damage = 0,
+			piercing = false,
 		}
 	end
 
@@ -111,12 +122,14 @@ function M.readFromGunModel(gun: Instance?): GunStats
 	if damage < 0 then
 		damage = 0
 	end
+	local piercing = boolAttr(gun, M.GunAttrPiercing, false)
 
 	return {
 		magazineSize = magSize,
 		reloadDuration = reloadDur,
 		shotCooldown = shotCd,
 		damage = damage,
+		piercing = piercing,
 	}
 end
 

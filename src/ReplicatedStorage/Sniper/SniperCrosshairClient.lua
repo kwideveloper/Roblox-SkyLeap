@@ -323,7 +323,11 @@ function SniperCrosshairClient.attach(tool: Tool, plr: Player)
 		local fp = equipped and SniperFirstPersonGate.isCameraCloseForFirstPerson(plr)
 
 		if equipped and fp then
-			showVisuals()
+			if tool:GetAttribute("_SniperScopeActive") == true then
+				hideVisuals()
+			else
+				showVisuals()
+			end
 		else
 			hideVisuals()
 		end

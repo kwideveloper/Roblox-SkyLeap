@@ -12,7 +12,191 @@ local Ragdoll = require(ReplicatedStorage:WaitForChild("Ragdoll"))
 local Animations = require(ReplicatedStorage:WaitForChild("Movement"):WaitForChild("Animations"))
 
 local ENEMY_TAG = Config.EnemyTag
+local AI_TAG = Config.EnemyAiTag or "IA"
 local DEFAULT_HP = Config.EnemyDefaultHealth
+local RESPAWN_SECONDS = math.max(0.1, tonumber(Config.EnemyRespawnSeconds) or 5)
+local RESPAWN_MODE_GHOST = "Ghost"
+local RESPAWN_MODE_RAGDOLL = "Ragdoll"
+
+type GhostPartState = {
+	part: BasePart,
+	transparency: number,
+	canQuery: boolean,
+	canTouch: boolean,
+	canCollide: boolean,
+}
+
+type GhostGuiState = {
+	gui: BillboardGui,
+	enabled: boolean,
+}
+
+type EnemyGhostState = {
+	active: boolean,
+	parts: { GhostPartState },
+	guis: { GhostGuiState },
+	token: number,
+}
+
+local ghostStateByModel: { [Model]: EnemyGhostState } = {}
+
+type RagdollRespawnData = {
+	template: Model,
+	parent: Instance?,
+	spawnCFrame: CFrame,
+	respawnScheduled: boolean,
+}
+
+local ragdollRespawnByModel: { [Model]: RagdollRespawnData } = {}
+
+local function canEnemyMove(instance: Instance): boolean
+	return CollectionService:HasTag(instance, ENEMY_TAG) and CollectionService:HasTag(instance, AI_TAG)
+end
+
+local function getOrCreateGhostState(model: Model): EnemyGhostState
+	local state = ghostStateByModel[model]
+	if state then
+		return state
+	end
+	state = {
+		active = false,
+		parts = {},
+		guis = {},
+		token = 0,
+	}
+	ghostStateByModel[model] = state
+	return state
+end
+
+local function setEnemyGhostActive(model: Model, active: boolean)
+	local state = getOrCreateGhostState(model)
+	if state.active == active and active == false then
+		return
+	end
+	state.active = active
+
+	if active then
+		state.parts = {}
+		state.guis = {}
+		for _, d in ipairs(model:GetDescendants()) do
+			if d:IsA("BasePart") then
+				table.insert(state.parts, {
+					part = d,
+					transparency = d.Transparency,
+					canQuery = d.CanQuery,
+					canTouch = d.CanTouch,
+					canCollide = d.CanCollide,
+				})
+				d.Transparency = 1
+				d.CanQuery = false
+				d.CanTouch = false
+			elseif d:IsA("BillboardGui") then
+				table.insert(state.guis, {
+					gui = d,
+					enabled = d.Enabled,
+				})
+				d.Enabled = false
+			end
+		end
+		return
+	end
+
+	for _, entry in ipairs(state.parts) do
+		if entry.part and entry.part.Parent then
+			entry.part.Transparency = entry.transparency
+			entry.part.CanQuery = entry.canQuery
+			entry.part.CanTouch = entry.canTouch
+			entry.part.CanCollide = entry.canCollide
+		end
+	end
+	for _, entry in ipairs(state.guis) do
+		if entry.gui and entry.gui.Parent then
+			entry.gui.Enabled = entry.enabled
+		end
+	end
+	state.parts = {}
+	state.guis = {}
+end
+
+local function stripRuntimeEnemyStateForTemplate(model: Model)
+	model:SetAttribute("_EnemyDummySetup", nil)
+	model:SetAttribute("_EnemyServerLocomotionStarted", nil)
+	model:SetAttribute("_EnemyGhostHooked", nil)
+	model:SetAttribute("_EnemyRagdollHooked", nil)
+	for _, d in ipairs(model:GetDescendants()) do
+		if d:IsA("BillboardGui") and d.Name == "EnemyOverheadBillboard" then
+			d:Destroy()
+		elseif d:IsA("BasePart") then
+			d:SetAttribute("_EnemyPartWrapped", nil)
+		end
+	end
+end
+
+local function captureRagdollTemplateIfNeeded(model: Model)
+	if ragdollRespawnByModel[model] then
+		return
+	end
+	local ok, cloned = pcall(function()
+		local c = model:Clone()
+		stripRuntimeEnemyStateForTemplate(c)
+		return c
+	end)
+	if not ok or not cloned then
+		return
+	end
+	ragdollRespawnByModel[model] = {
+		template = cloned,
+		parent = model.Parent,
+		spawnCFrame = model:GetPivot(),
+		respawnScheduled = false,
+	}
+end
+
+local function scheduleRagdollRespawn(model: Model)
+	local data = ragdollRespawnByModel[model]
+	if not data or data.respawnScheduled then
+		return
+	end
+	data.respawnScheduled = true
+	task.delay(RESPAWN_SECONDS, function()
+		local latest = ragdollRespawnByModel[model]
+		if not latest then
+			return
+		end
+		latest.respawnScheduled = false
+		local parent = latest.parent
+		if not parent or not parent.Parent then
+			parent = workspace
+		end
+		if model.Parent then
+			model:Destroy()
+		end
+		local fresh = latest.template:Clone()
+		fresh.Parent = parent
+		fresh:PivotTo(latest.spawnCFrame)
+		CollectionService:AddTag(fresh, ENEMY_TAG)
+	end)
+end
+
+local function hookEnemyDeathRagdoll(model: Model, humanoid: Humanoid)
+	if model:GetAttribute("_EnemyRagdollHooked") then
+		return
+	end
+	model:SetAttribute("_EnemyRagdollHooked", true)
+	humanoid.BreakJointsOnDeath = false
+	humanoid.Died:Connect(function()
+		task.defer(function()
+			if model.Parent then
+				local h = model:FindFirstChildOfClass("Humanoid")
+				if h then
+					h.BreakJointsOnDeath = false
+				end
+				Ragdoll.apply(model)
+			end
+		end)
+		scheduleRagdollRespawn(model)
+	end)
+end
 
 local function modelAdornee(model: Model): BasePart?
 	if model.PrimaryPart then
@@ -31,7 +215,7 @@ local function createEnemyHumanoid(model: Model): Humanoid
 	humanoid.Name = "EnemyHumanoid"
 	humanoid.MaxHealth = DEFAULT_HP
 	humanoid.Health = DEFAULT_HP
-	humanoid.WalkSpeed = Config.EnemyWanderWalkSpeed
+	humanoid.WalkSpeed = canEnemyMove(model) and Config.EnemyWanderWalkSpeed or 0
 	humanoid.JumpPower = 50
 	humanoid.AutoRotate = true
 	humanoid.DisplayDistanceType = Enum.HumanoidDisplayDistanceType.None
@@ -44,31 +228,46 @@ local function createEnemyHumanoid(model: Model): Humanoid
 	return humanoid
 end
 
-local function hookEnemyDeathRagdoll(model: Model)
-	if model:GetAttribute("_EnemyRagdollHooked") then
-		return
-	end
-	local humanoid = model:FindFirstChildOfClass("Humanoid")
-	if not humanoid then
-		return
-	end
-	model:SetAttribute("_EnemyRagdollHooked", true)
-	humanoid.BreakJointsOnDeath = false
-	humanoid.Died:Connect(function()
-		task.defer(function()
-			if not model.Parent then
-				return
-			end
-			local h = model:FindFirstChildOfClass("Humanoid")
-			if h then
-				h.BreakJointsOnDeath = false
-			end
-			Ragdoll.apply(model)
-		end)
-	end)
-end
-
 local function ensureHumanoidRootPart(model: Model, part: BasePart)
+	local function shouldPreserveStartName(): boolean
+		if part.Name ~= "Start" then
+			return false
+		end
+		-- Animated system relies on exact Start/Finish names.
+		local hasFinish = model:FindFirstChild("Finish") ~= nil
+		return hasFinish
+	end
+
+	local function createAuxRootFrom(source: BasePart): BasePart
+		local existing = model:FindFirstChild("HumanoidRootPart")
+		if existing and existing:IsA("BasePart") then
+			return existing
+		end
+		local aux = Instance.new("Part")
+		aux.Name = "HumanoidRootPart"
+		aux.Size = source.Size
+		aux.CFrame = source.CFrame
+		aux.Transparency = 1
+		aux.CanCollide = false
+		aux.CanQuery = false
+		aux.CanTouch = false
+		aux.Massless = true
+		aux.Anchored = source.Anchored
+		aux.Parent = model
+
+		local weld = Instance.new("WeldConstraint")
+		weld.Part0 = aux
+		weld.Part1 = source
+		weld.Parent = aux
+		return aux
+	end
+
+	if shouldPreserveStartName() then
+		local auxRoot = createAuxRootFrom(part)
+		model.PrimaryPart = auxRoot
+		return
+	end
+
 	if part.Name == "HumanoidRootPart" then
 		model.PrimaryPart = part
 		return
@@ -113,6 +312,7 @@ local function promotePartToEnemyCharacter(part: BasePart)
 
 	CollectionService:RemoveTag(part, ENEMY_TAG)
 	CollectionService:AddTag(model, ENEMY_TAG)
+	model:SetAttribute("_EnemyRespawnMode", RESPAWN_MODE_GHOST)
 end
 
 local function stripDefaultAnimateForNpc(model: Model)
@@ -269,6 +469,9 @@ local function injectEnemyLocomotion(model: Model)
 	if not Config.EnemyLocomotionEnabled then
 		return
 	end
+	if not canEnemyMove(model) then
+		return
+	end
 	stripDefaultAnimateForNpc(model)
 	if Config.EnemyLocomotionUseServerAnimator then
 		startEnemyServerLocomotion(model)
@@ -393,13 +596,23 @@ local function setupEnemy(instance: Instance)
 		promotePartToEnemyCharacter(instance)
 		return
 	elseif instance:IsA("Model") then
+		local hadHumanoidBeforeSetup = instance:FindFirstChildOfClass("Humanoid") ~= nil
+		local configuredRespawnMode = instance:GetAttribute("_EnemyRespawnMode")
+		local respawnMode: string
+		if configuredRespawnMode == RESPAWN_MODE_GHOST or configuredRespawnMode == RESPAWN_MODE_RAGDOLL then
+			respawnMode = configuredRespawnMode
+		else
+			respawnMode = hadHumanoidBeforeSetup and RESPAWN_MODE_RAGDOLL or RESPAWN_MODE_GHOST
+			instance:SetAttribute("_EnemyRespawnMode", respawnMode)
+		end
+
 		humanoid = instance:FindFirstChildOfClass("Humanoid")
 		if not humanoid then
 			humanoid = createEnemyHumanoid(instance)
-		else
-			humanoid.WalkSpeed = Config.EnemyWanderWalkSpeed
-			humanoid.BreakJointsOnDeath = false
 		end
+		humanoid.WalkSpeed = canEnemyMove(instance) and Config.EnemyWanderWalkSpeed or 0
+		humanoid.BreakJointsOnDeath = false
+		humanoid:SetStateEnabled(Enum.HumanoidStateType.Dead, respawnMode == RESPAWN_MODE_RAGDOLL)
 
 		local hrpCheck = instance:FindFirstChild("HumanoidRootPart")
 		if not hrpCheck or not hrpCheck:IsA("BasePart") then
@@ -417,6 +630,9 @@ local function setupEnemy(instance: Instance)
 		end
 		attrHost = nil
 		instance:SetAttribute("_EnemyDummySetup", true)
+		if respawnMode == RESPAWN_MODE_RAGDOLL then
+			captureRagdollTemplateIfNeeded(instance)
+		end
 	else
 		return
 	end
@@ -428,7 +644,41 @@ local function setupEnemy(instance: Instance)
 	injectEnemyLocomotion(instance)
 
 	if instance:IsA("Model") then
-		hookEnemyDeathRagdoll(instance)
+		local respawnMode = instance:GetAttribute("_EnemyRespawnMode")
+		if respawnMode == RESPAWN_MODE_RAGDOLL and humanoid then
+			hookEnemyDeathRagdoll(instance, humanoid)
+		elseif humanoid and not instance:GetAttribute("_EnemyGhostHooked") then
+			instance:SetAttribute("_EnemyGhostHooked", true)
+			humanoid.HealthChanged:Connect(function(health)
+				if health > 0 then
+					return
+				end
+				if instance:GetAttribute("_EnemyGhostActive") then
+					humanoid.Health = math.max(1, humanoid.MaxHealth)
+					return
+				end
+
+				instance:SetAttribute("_EnemyGhostActive", true)
+				local state = getOrCreateGhostState(instance)
+				state.token += 1
+				local token = state.token
+
+				setEnemyGhostActive(instance, true)
+				humanoid.Health = math.max(1, humanoid.MaxHealth)
+
+				task.delay(RESPAWN_SECONDS, function()
+					if not instance.Parent then
+						return
+					end
+					local latestState = ghostStateByModel[instance]
+					if not latestState or latestState.token ~= token then
+						return
+					end
+					setEnemyGhostActive(instance, false)
+					instance:SetAttribute("_EnemyGhostActive", false)
+				end)
+			end)
+		end
 	end
 end
 

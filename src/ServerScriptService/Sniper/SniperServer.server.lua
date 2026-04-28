@@ -12,6 +12,7 @@ local Config = require(ReplicatedStorage:WaitForChild("Sniper"):WaitForChild("Co
 local SniperWeaponPartResolve =
 	require(ReplicatedStorage:WaitForChild("Sniper"):WaitForChild("SniperWeaponPartResolve"))
 local SniperGunStats = require(ReplicatedStorage:WaitForChild("Sniper"):WaitForChild("SniperGunStats"))
+local KillRewardService = require(ServerScriptService:WaitForChild("KillRewardService"))
 
 local function sniperDebug(fmt: string, ...: any)
 	if Config.SniperDebugApplyHit ~= true then
@@ -117,6 +118,17 @@ local airBoostProbeByPlayer: { [Player]: BasePart } = {}
 -- After a successful air down-boost, true until Humanoid touches ground (one boost per airborne stint).
 local airDownBoostConsumedUntilGround: { [Player]: boolean } = {}
 local ENEMY_TAG = Config.EnemyTag
+
+local function isEnemyGhostActive(instance: Instance?): boolean
+	local current = instance
+	while current and current ~= Workspace do
+		if CollectionService:HasTag(current, ENEMY_TAG) and current:GetAttribute("_EnemyGhostActive") == true then
+			return true
+		end
+		current = current.Parent
+	end
+	return false
+end
 
 local function getAirBoostProbeFolder(): Folder
 	local f = Workspace:FindFirstChild("SniperAirDownBoostProbes")
@@ -253,6 +265,9 @@ local function findEnemyRoot(instance: Instance): Instance?
 end
 
 local function destroyEnemyRoot(root: Instance)
+	if isEnemyGhostActive(root) then
+		return
+	end
 	if root:IsA("Model") then
 		local humanoid = root:FindFirstChildOfClass("Humanoid")
 		if not humanoid and CollectionService:HasTag(root, ENEMY_TAG) then
@@ -317,7 +332,13 @@ end
 
 -- damage <= 0 means "lethal" (instant kill). damage > 0 subtracts from Humanoid.Health.
 local function applyHit(shooter: Player, hitPart: BasePart, damage: number): (string?, Player?)
+	if isEnemyGhostActive(hitPart) then
+		return nil, nil
+	end
 	local humanoid, model = resolveTargetHumanoid(hitPart)
+	if model and CollectionService:HasTag(model, ENEMY_TAG) and model:GetAttribute("_EnemyGhostActive") == true then
+		return nil, nil
+	end
 	if humanoid and model and humanoid.Health > 0 then
 		local victim = Players:GetPlayerFromCharacter(model)
 		sniperDebug(
@@ -396,11 +417,51 @@ local function applyHit(shooter: Player, hitPart: BasePart, damage: number): (st
 	end
 
 	local enemyRoot = findEnemyRoot(hitPart)
-	if enemyRoot then
+	if enemyRoot and not isEnemyGhostActive(enemyRoot) then
 		destroyEnemyRoot(enemyRoot)
 		return "enemy", nil
 	end
 	return nil, nil
+end
+
+local function isHeadshotPart(hitPart: BasePart, hitPosition: Vector3?): boolean
+	local n = string.lower(hitPart.Name)
+	if n == "head" or string.find(n, "head", 1, true) ~= nil then
+		return true
+	end
+	local _, maybeModel = resolveTargetHumanoid(hitPart)
+	if not maybeModel then
+		maybeModel = hitPart:FindFirstAncestorOfClass("Model")
+	end
+	if maybeModel then
+		local head = maybeModel:FindFirstChild("Head", true)
+		if head and head:IsA("BasePart") then
+			if hitPart == head or hitPart:IsDescendantOf(head) then
+				return true
+			end
+			-- Accessories attached to the head usually ray-hit on Handle, not on Head.
+			-- Treat as headshot if the impact point is spatially close to the head volume.
+			local impact = hitPosition or hitPart.Position
+			local nearRadius = math.max(1.15, head.Size.Magnitude * 0.55)
+			if (impact - head.Position).Magnitude <= nearRadius then
+				return true
+			end
+		end
+	end
+	return false
+end
+
+local function isPenetrableTargetPart(part: BasePart): boolean
+	if isEnemyGhostActive(part) then
+		return false
+	end
+	if isCharacterModelPart(part) then
+		return true
+	end
+	if findEnemyRoot(part) ~= nil then
+		return true
+	end
+	return false
 end
 
 local function broadcastLaser(shooter: Player, from: Vector3, to: Vector3)
@@ -706,6 +767,8 @@ requestFire.OnServerEvent:Connect(function(player: Player, claimedOrigin: Vector
 	local endPos: Vector3
 	local hitKind: string? = nil
 	local victimPlayer: Player? = nil
+	local wasHeadshot = false
+	local killsThisShot = 0
 	if result then
 		endPos = result.Position
 		local inst = result.Instance
@@ -764,24 +827,121 @@ requestFire.OnServerEvent:Connect(function(player: Player, claimedOrigin: Vector
 			elseif probeAttr == true then
 				-- Another player’s air probe; no damage / hole
 			else
-				hitKind, victimPlayer = applyHit(player, inst, stats.damage)
-				if victimPlayer then
-					local savedAuto = sniperPreKillCharAutoLoads[victimPlayer]
-					sniperPreKillCharAutoLoads[victimPlayer] = nil
+				local function handleVictimSpectate(victim: Player?)
+					if not victim then
+						return
+					end
+					local savedAuto = sniperPreKillCharAutoLoads[victim]
+					sniperPreKillCharAutoLoads[victim] = nil
 					if DeathSpectateServer and DeathSpectateServer.tryBegin then
 						pcall(function()
-							DeathSpectateServer.tryBegin(victimPlayer, player, savedAuto)
+							DeathSpectateServer.tryBegin(victim, player, savedAuto)
 						end)
 					else
 						if savedAuto == nil then
-							writeCharacterAutoLoads(victimPlayer, true)
+							writeCharacterAutoLoads(victim, true)
 						else
-							writeCharacterAutoLoads(victimPlayer, savedAuto)
+							writeCharacterAutoLoads(victim, savedAuto)
 						end
 					end
 				end
+
+				hitKind, victimPlayer = applyHit(player, inst, stats.damage)
+				wasHeadshot = isHeadshotPart(inst, result.Position)
+				if hitKind then
+					killsThisShot += 1
+				end
+				handleVictimSpectate(victimPlayer)
 				if hitKind == nil and not isCharacterModelPart(inst) then
 					trySpawnBulletHole(inst, result.Position, result.Normal)
+				end
+
+				if stats.piercing == true and isPenetrableTargetPart(inst) then
+					local rem = Config.MaxRange - (result.Position - origin).Magnitude
+					local cursor = result.Position + dir * 0.05
+					local anyHitKind = hitKind
+					local anyVictim = victimPlayer
+					local anyHeadshot = wasHeadshot
+					local ignore: { Instance } = { character }
+
+					local humModel = select(2, resolveTargetHumanoid(inst))
+					if humModel then
+						table.insert(ignore, humModel)
+					else
+						local enemyRoot = findEnemyRoot(inst)
+						if enemyRoot then
+							table.insert(ignore, enemyRoot)
+						else
+							table.insert(ignore, inst)
+						end
+					end
+
+					while rem > 0.05 do
+						local p2 = RaycastParams.new()
+						p2.FilterType = Enum.RaycastFilterType.Exclude
+						p2.FilterDescendantsInstances = ignore
+						local r2 = Workspace:Raycast(cursor, dir * rem, p2)
+						if not r2 then
+							endPos = cursor + dir * rem
+							break
+						end
+
+						endPos = r2.Position
+						local inst2 = r2.Instance
+						if not inst2 or not inst2:IsA("BasePart") then
+							break
+						end
+
+						local probeAttr2 = inst2:GetAttribute("SniperAirDownBoostProbe")
+						local ownerAttr2 = inst2:GetAttribute("OwnerUserId")
+						local isOwnProbe2 = probeAttr2 == true and ownerAttr2 == player.UserId
+						local traveled = (r2.Position - cursor).Magnitude + 0.05
+						rem -= traveled
+
+						if isOwnProbe2 or probeAttr2 == true then
+							table.insert(ignore, inst2)
+							cursor = r2.Position + dir * 0.05
+							continue
+						end
+
+						local hk2, vp2 = applyHit(player, inst2, stats.damage)
+						local hs2 = isHeadshotPart(inst2, r2.Position)
+						if hk2 then
+							killsThisShot += 1
+							anyHitKind = hk2
+							anyVictim = anyVictim or vp2
+							anyHeadshot = anyHeadshot or hs2
+							handleVictimSpectate(vp2)
+							KillRewardService.registerKill(player, {
+								isHeadshot = hs2,
+								targetType = hk2,
+							})
+						elseif not isCharacterModelPart(inst2) then
+							trySpawnBulletHole(inst2, r2.Position, r2.Normal)
+							break
+						end
+
+						if isPenetrableTargetPart(inst2) then
+							local hm2 = select(2, resolveTargetHumanoid(inst2))
+							if hm2 then
+								table.insert(ignore, hm2)
+							else
+								local er2 = findEnemyRoot(inst2)
+								if er2 then
+									table.insert(ignore, er2)
+								else
+									table.insert(ignore, inst2)
+								end
+							end
+							cursor = r2.Position + dir * 0.05
+						else
+							break
+						end
+					end
+
+					hitKind = anyHitKind
+					victimPlayer = anyVictim
+					wasHeadshot = anyHeadshot
 				end
 			end
 		end
@@ -812,6 +972,16 @@ requestFire.OnServerEvent:Connect(function(player: Player, claimedOrigin: Vector
 			victimPlayer and victimPlayer.Name or "nil",
 			(endPos - origin).Magnitude
 		)
+	end
+
+	if hitKind then
+		KillRewardService.registerKill(player, {
+			isHeadshot = wasHeadshot,
+			targetType = hitKind,
+		})
+		if killsThisShot >= 2 then
+			KillRewardService.registerCollateral(player, killsThisShot)
+		end
 	end
 
 	if hitKind and Config.KillConfirmSoundId ~= "" then

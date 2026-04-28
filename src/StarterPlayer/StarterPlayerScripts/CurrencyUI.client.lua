@@ -224,7 +224,9 @@ CurrencyUpdated.OnClientEvent:Connect(function(payload)
 	-- Handle awarded coins animation
 	if payload.AwardedCoins and (payload.AwardedCoins > 0) and not payload.FromPlaytime then
 		-- Visual feedback for awarded coins using global system (skip if from playtime rewards)
-		RewardAnimations.spawnCoinBurst(payload.AwardedCoins)
+		RewardAnimations.spawnCoinBurst(payload.AwardedCoins, nil, nil, {
+			speedMultiplier = tonumber(payload.AwardedCoinsAnimationSpeedMultiplier) or 1,
+		})
 		-- FIXED: Don't animate numbers immediately - let flying coins handle it
 		-- Just update the target silently like playtime rewards to prevent double counting
 		state.coins = coinsTarget

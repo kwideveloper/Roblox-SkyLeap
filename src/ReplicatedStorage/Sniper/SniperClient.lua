@@ -1,6 +1,7 @@
 -- Client-side binding for the Sniper Tool: input, local laser preview, remote fire request.
 
 local Debris = game:GetService("Debris")
+local Lighting = game:GetService("Lighting")
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
@@ -29,7 +30,14 @@ local DEBUG_PREFIX = "[SniperClientAnim]"
 local DEFAULT_RELOAD_FAILED_EASTER_EGG_DENOMINATOR = 10000
 
 local function debugLog(msg: string, ...: any)
+	if Config.SniperDebugApplyHit ~= true then
+		return
+	end
 	print(DEBUG_PREFIX .. " " .. string.format(msg, ...))
+end
+
+local function scopeDebugEnabled(): boolean
+	return Config.SniperDebugApplyHit == true
 end
 
 local function getCasingShellTemplate(): Model?
@@ -285,9 +293,478 @@ local function bindTool(tool: Tool, options: { LocalPlayer: Player })
 		return
 	end
 	tool:SetAttribute("_SniperClientBound", true)
+	local localPlayer = options.LocalPlayer
 
 	local fireHoldHeartbeatConn: RBXScriptConnection? = nil
+	local scopeRenderConn: RBXScriptConnection? = nil
+	local scopeGui: ScreenGui? = nil
+	local scopeZoomLabel: TextLabel? = nil
+	local scopeReticleRoot: Frame? = nil
+	local scopeZoomIndex = 1
+	local scopedVisualActive = false
+	local scopedFovApplied = false
+	local aimButtonHeld = false
+	local scopeRecoilPitchDeg = 0
+	local scopeRecoilYawDeg = 0
+	local scopeRecoilYawSign = 1
+	local scopeAppliedPitchRad = 0
+	local scopeAppliedYawRad = 0
+	local scopeAppliedForwardStuds = 0
+	local scopeFovApplied = false
+	local scopeLastFov: number? = nil
+	local blurEffect: BlurEffect? = nil
+	local dofEffect: DepthOfFieldEffect? = nil
+	local savedMouseSensitivity: number? = nil
+	local scopeLastCameraCf: CFrame? = nil
+	local scopeDebugLastAt: { [string]: number } = {}
+	local localNextAllowedShotAt = 0
+	local localReloadEndsAt = 0
+	local lastObservedReloadEndsAt = 0
+	local lastReloadSoundAt = -math.huge
+	local lastReloadAnimAt = -math.huge
+
+	local function scopeLogThrottled(key: string, everySec: number, msg: string, ...: any)
+		if not scopeDebugEnabled() then
+			return
+		end
+		local now = os.clock()
+		local last = scopeDebugLastAt[key] or -math.huge
+		if (now - last) < everySec then
+			return
+		end
+		scopeDebugLastAt[key] = now
+		debugLog("[ScopeDebug] " .. msg, ...)
+	end
+
+	local function ensureClientStateFolder(): Folder
+		local cs = ReplicatedStorage:FindFirstChild("ClientState")
+		if not cs then
+			cs = Instance.new("Folder")
+			cs.Name = "ClientState"
+			cs.Parent = ReplicatedStorage
+		end
+		return cs
+	end
+
+	local function setFovOverride(enable: boolean, fovValue: number)
+		local cs = ensureClientStateFolder()
+		local active = cs:FindFirstChild("CameraFovOverrideActive")
+		if not active then
+			active = Instance.new("BoolValue")
+			active.Name = "CameraFovOverrideActive"
+			active.Parent = cs
+		end
+		active.Value = enable
+
+		local value = cs:FindFirstChild("CameraFovOverrideValue")
+		if not value then
+			value = Instance.new("NumberValue")
+			value.Name = "CameraFovOverrideValue"
+			value.Parent = cs
+		end
+		value.Value = math.clamp(tonumber(fovValue) or 70, 10, 120)
+	end
+
+	local function zoomLevelToFov(zoomLevel: number): number
+		local baseFov = tonumber(Config.SniperScopeBaseFov) or 70
+		local z = math.max(1.001, zoomLevel)
+		return math.clamp(baseFov / z, 10, 120)
+	end
+
+	local function ensureScopePostFx()
+		if blurEffect == nil or blurEffect.Parent == nil then
+			local e = Lighting:FindFirstChild("SkyLeapSniperScopeBlur")
+			if e and e:IsA("BlurEffect") then
+				blurEffect = e
+			else
+				e = Instance.new("BlurEffect")
+				e.Name = "SkyLeapSniperScopeBlur"
+				e.Size = 0
+				e.Parent = Lighting
+				blurEffect = e
+			end
+		end
+		if dofEffect == nil or dofEffect.Parent == nil then
+			local e = Lighting:FindFirstChild("SkyLeapSniperScopeDoF")
+			if e and e:IsA("DepthOfFieldEffect") then
+				dofEffect = e
+			else
+				e = Instance.new("DepthOfFieldEffect")
+				e.Name = "SkyLeapSniperScopeDoF"
+				e.FarIntensity = 0
+				e.NearIntensity = 0
+				e.FocusDistance = 50
+				e.InFocusRadius = 30
+				e.Parent = Lighting
+				dofEffect = e
+			end
+		end
+	end
+
+	local function applyScopePostFx(on: boolean)
+		if Config.SniperScopePostFxEnabled == false then
+			if blurEffect then
+				blurEffect.Size = 0
+			end
+			if dofEffect then
+				dofEffect.FarIntensity = 0
+				dofEffect.NearIntensity = 0
+			end
+			return
+		end
+		ensureScopePostFx()
+		if blurEffect then
+			TweenService:Create(
+				blurEffect,
+				TweenInfo.new(
+					on and (Config.SniperScopeZoomInSeconds or 0.2) or (Config.SniperScopeZoomOutSeconds or 0.14),
+					Enum.EasingStyle.Sine,
+					Enum.EasingDirection.InOut
+				),
+				{ Size = on and (Config.SniperScopeBlurSize or 10) or 0 }
+			):Play()
+		end
+		if dofEffect then
+			TweenService:Create(
+				dofEffect,
+				TweenInfo.new(
+					on and (Config.SniperScopeZoomInSeconds or 0.2) or (Config.SniperScopeZoomOutSeconds or 0.14),
+					Enum.EasingStyle.Sine,
+					Enum.EasingDirection.InOut
+				),
+				{
+					FarIntensity = on and (Config.SniperScopeDofFarIntensity or 0.45) or 0,
+					NearIntensity = on and (Config.SniperScopeDofNearIntensity or 0.28) or 0,
+				}
+			):Play()
+		end
+	end
+
+	local function getScopeZoomLevels(): { number }
+		local raw = Config.SniperScopeZoomLevels
+		if type(raw) ~= "table" then
+			raw = Config.SniperScopeZoomFovLevels
+		end
+		local levels: { number } = {}
+		if type(raw) == "table" then
+			for _, n in ipairs(raw) do
+				if type(n) == "number" and n > 0 and n == n and n ~= math.huge and n ~= -math.huge then
+					table.insert(levels, n)
+				end
+			end
+		end
+		if #levels == 0 then
+			levels = { 2, 3, 4, 5, 10 }
+		end
+		return levels
+	end
+
+	local function getGunModelForAimConfig(): Model?
+		local vmGun = ViewModelClient.getGunModelForTool(tool)
+		if vmGun and vmGun:IsA("Model") then
+			return vmGun
+		end
+		local gun = tool:FindFirstChild("Gun")
+		if gun and gun:IsA("Model") then
+			return gun
+		end
+		return nil
+	end
+
+	local function readAimEnabledFromGun(): boolean
+		local gun = getGunModelForAimConfig()
+		if not gun then
+			return true
+		end
+		local v = gun:GetAttribute("SniperAimEnabled")
+		if type(v) == "boolean" then
+			return v
+		end
+		return true
+	end
+
+	local function readAimZoomCountFromGun(): number?
+		local gun = getGunModelForAimConfig()
+		if not gun then
+			return nil
+		end
+		local v = gun:GetAttribute("SniperAimZoomCount")
+		if type(v) ~= "number" then
+			return nil
+		end
+		if v ~= v or v == math.huge or v == -math.huge then
+			return nil
+		end
+		return math.max(1, math.floor(v + 0.5))
+	end
+
+	local function getEffectiveScopeZoomLevels(): { number }
+		local levels = getScopeZoomLevels()
+		local count = readAimZoomCountFromGun()
+		if type(count) ~= "number" then
+			return levels
+		end
+		if count >= #levels then
+			return levels
+		end
+		local cut: { number } = {}
+		for i = 1, count do
+			table.insert(cut, levels[i])
+		end
+		return cut
+	end
+
+	local function getScopeDisplayLevels(): { number? }
+		local raw = Config.SniperScopeZoomDisplayLevels
+		local labels: { number? } = {}
+		if type(raw) == "table" then
+			for _, n in ipairs(raw) do
+				if type(n) == "number" and n > 0 and n == n and n ~= math.huge and n ~= -math.huge then
+					table.insert(labels, n)
+				end
+			end
+		end
+		return labels
+	end
+
+	local function getScopeForwardOffsetLevels(): { number }
+		local raw = Config.SniperScopeZoomForwardOffsetStudsLevels
+		local levels: { number } = {}
+		if type(raw) == "table" then
+			for _, n in ipairs(raw) do
+				if type(n) == "number" and n == n and n ~= math.huge and n ~= -math.huge then
+					table.insert(levels, math.max(0, n))
+				end
+			end
+		end
+		return levels
+	end
+
+	local function computeDynamicScopeForwardStuds(character: Model?, zoomLevel: number): number
+		local fallbackDist = tonumber(Config.SniperScopeZoomDistanceFallbackStuds) or 220
+		local minOffset = tonumber(Config.SniperScopeZoomForwardOffsetMinStuds) or 0
+		local maxOffset = tonumber(Config.SniperScopeZoomForwardOffsetMaxStuds) or 140
+		minOffset = math.max(0, minOffset)
+		maxOffset = math.max(minOffset, maxOffset)
+
+		local camera = Workspace.CurrentCamera
+		if not camera then
+			return minOffset
+		end
+
+		local vs = camera.ViewportSize
+		local ray = camera:ViewportPointToRay(vs.X * 0.5, vs.Y * 0.5)
+		local params = RaycastParams.new()
+		params.FilterType = Enum.RaycastFilterType.Exclude
+		params.FilterDescendantsInstances = { character }
+		local hit = Workspace:Raycast(ray.Origin, ray.Direction * Config.MaxRange, params)
+
+		local dist = fallbackDist
+		if hit then
+			dist = (hit.Position - ray.Origin).Magnitude
+		end
+		if dist ~= dist or dist == math.huge or dist == -math.huge then
+			dist = fallbackDist
+		end
+		dist = math.max(1, dist)
+
+		local z = math.max(1.0001, zoomLevel)
+		local desired = dist * (1 - 1 / z)
+		return math.clamp(desired, minOffset, maxOffset)
+	end
+
+	local function resolveScopeForwardTargetStuds(character: Model?, zoomLevel: number): number
+		if Config.SniperScopeZoomUseDistanceModel == false then
+			local forwardLevels = getScopeForwardOffsetLevels()
+			return forwardLevels[scopeZoomIndex] or 0
+		end
+		return computeDynamicScopeForwardStuds(character, zoomLevel)
+	end
+
+	local function ensureScopeGui(): ScreenGui?
+		if scopeGui and scopeGui.Parent then
+			return scopeGui
+		end
+		local pg = localPlayer:FindFirstChild("PlayerGui") or localPlayer:WaitForChild("PlayerGui")
+		if not pg then
+			return nil
+		end
+		local existing = pg:FindFirstChild("SkyLeapSniperScope")
+		if existing and existing:IsA("ScreenGui") then
+			scopeGui = existing
+			scopeZoomLabel = existing:FindFirstChild("ZoomLabel", true) :: TextLabel?
+			return scopeGui
+		end
+		local g = Instance.new("ScreenGui")
+		g.Name = "SkyLeapSniperScope"
+		g.ResetOnSpawn = false
+		g.IgnoreGuiInset = true
+		g.DisplayOrder = (Config.SniperCrosshairGuiDisplayOrder or 2000000) + 2
+		g.Enabled = false
+		g.Parent = pg
+
+		local root = Instance.new("Frame")
+		root.Name = "Root"
+		root.BackgroundTransparency = 1
+		root.Size = UDim2.fromScale(1, 1)
+		root.Parent = g
+
+		local lensDiameterScale = 0.86
+		local halfGap = (1 - lensDiameterScale) * 0.5
+		local thickness = math.clamp(math.floor(tonumber(Config.SniperScopeRingThicknessPx) or 6), 2, 36)
+		local vignetteAlpha = tonumber(Config.SniperScopeOutsideMaskTransparency) or 0.3
+		vignetteAlpha = math.clamp(vignetteAlpha, 0, 1)
+		local top = Instance.new("Frame")
+		top.BackgroundColor3 = Color3.new(0, 0, 0)
+		top.BorderSizePixel = 0
+		top.BackgroundTransparency = vignetteAlpha
+		top.Size = UDim2.new(1, 0, halfGap, 0)
+		top.Position = UDim2.fromScale(0, 0)
+		top.Parent = root
+
+		local bottom = Instance.new("Frame")
+		bottom.BackgroundColor3 = Color3.new(0, 0, 0)
+		bottom.BorderSizePixel = 0
+		bottom.BackgroundTransparency = vignetteAlpha
+		bottom.Size = UDim2.new(1, 0, halfGap, 0)
+		bottom.Position = UDim2.new(0, 0, 1 - halfGap, 0)
+		bottom.Parent = root
+
+		local left = Instance.new("Frame")
+		left.BackgroundColor3 = Color3.new(0, 0, 0)
+		left.BorderSizePixel = 0
+		left.BackgroundTransparency = vignetteAlpha
+		left.Size = UDim2.new(halfGap, 0, lensDiameterScale, 0)
+		left.Position = UDim2.new(0, 0, halfGap, 0)
+		left.Parent = root
+
+		local right = Instance.new("Frame")
+		right.BackgroundColor3 = Color3.new(0, 0, 0)
+		right.BorderSizePixel = 0
+		right.BackgroundTransparency = vignetteAlpha
+		right.Size = UDim2.new(halfGap, 0, lensDiameterScale, 0)
+		right.Position = UDim2.new(1 - halfGap, 0, halfGap, 0)
+		right.Parent = root
+
+		local lensRing = Instance.new("Frame")
+		lensRing.Name = "LensRing"
+		lensRing.AnchorPoint = Vector2.new(0.5, 0.5)
+		lensRing.Position = UDim2.fromScale(0.5, 0.5)
+		lensRing.Size = UDim2.fromScale(lensDiameterScale, lensDiameterScale)
+		lensRing.BackgroundTransparency = 1
+		lensRing.Parent = root
+		local ringCorner = Instance.new("UICorner")
+		ringCorner.CornerRadius = UDim.new(1, 0)
+		ringCorner.Parent = lensRing
+		local ringStroke = Instance.new("UIStroke")
+		ringStroke.Thickness = thickness
+		ringStroke.Color = Color3.new(0, 0, 0)
+		ringStroke.Transparency = 0.15
+		ringStroke.Parent = lensRing
+
+		local reticle = Instance.new("Frame")
+		reticle.Name = "Reticle"
+		reticle.AnchorPoint = Vector2.new(0.5, 0.5)
+		reticle.Position = UDim2.fromScale(0.5, 0.5)
+		reticle.Size = UDim2.fromOffset(2, 2)
+		reticle.BackgroundTransparency = 1
+		reticle.Parent = root
+		scopeReticleRoot = reticle
+
+		local hLine = Instance.new("Frame")
+		hLine.Name = "Horizontal"
+		hLine.BackgroundColor3 = Color3.fromRGB(18, 18, 18)
+		hLine.BorderSizePixel = 0
+		hLine.AnchorPoint = Vector2.new(0.5, 0.5)
+		hLine.Position = UDim2.fromScale(0.5, 0.5)
+		hLine.Size = UDim2.fromOffset(320, 1)
+		hLine.Parent = reticle
+
+		local vLine = Instance.new("Frame")
+		vLine.Name = "Vertical"
+		vLine.BackgroundColor3 = Color3.fromRGB(18, 18, 18)
+		vLine.BorderSizePixel = 0
+		vLine.AnchorPoint = Vector2.new(0.5, 0.5)
+		vLine.Position = UDim2.fromScale(0.5, 0.5)
+		vLine.Size = UDim2.fromOffset(1, 320)
+		vLine.Parent = reticle
+
+		local centerDot = Instance.new("Frame")
+		centerDot.Name = "CenterDot"
+		centerDot.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+		centerDot.BorderSizePixel = 0
+		centerDot.AnchorPoint = Vector2.new(0.5, 0.5)
+		centerDot.Position = UDim2.fromScale(0.5, 0.5)
+		centerDot.Size = UDim2.fromOffset(3, 3)
+		centerDot.Parent = reticle
+
+		local label = Instance.new("TextLabel")
+		label.Name = "ZoomLabel"
+		label.BackgroundTransparency = 1
+		label.AnchorPoint = Vector2.new(0.5, 0.5)
+		label.Position = UDim2.fromScale(0.5, 0.8)
+		label.Size = UDim2.fromOffset(160, 28)
+		label.Font = Enum.Font.GothamBold
+		label.TextSize = 16
+		label.TextColor3 = Color3.fromRGB(220, 220, 220)
+		label.TextStrokeColor3 = Color3.new(0, 0, 0)
+		label.TextStrokeTransparency = 0.35
+		label.Text = ""
+		label.Parent = root
+
+		scopeGui = g
+		scopeZoomLabel = label
+		return scopeGui
+	end
+
+	local function setScopeVisualActive(on: boolean, zoomLevel: number)
+		local gui = ensureScopeGui()
+		if gui then
+			gui.Enabled = on
+		end
+		if scopeZoomLabel then
+			local labels = getScopeDisplayLevels()
+			local x = zoomLevel
+			if labels[scopeZoomIndex] ~= nil then
+				x = labels[scopeZoomIndex] :: number
+			end
+			scopeZoomLabel.Text = string.format("%.1fx  [Mouse Wheel]", x)
+		end
+		if not on and scopeReticleRoot then
+			scopeReticleRoot.Position = UDim2.fromScale(0.5, 0.5)
+		end
+	end
+
+	local function isReloadBlockingAim(nowServer: number?): boolean
+		local now = nowServer or Workspace:GetServerTimeNow()
+		if now < localReloadEndsAt then
+			return true
+		end
+		local reloadEndsAt = tool:GetAttribute(SniperGunStats.ToolAttrReloadEndsAt)
+		if type(reloadEndsAt) == "number" and reloadEndsAt > now then
+			return true
+		end
+		return false
+	end
 	tool.Destroying:Connect(function()
+		ViewModelClient.setAimHeld(tool, false)
+		if scopeFovApplied then
+			scopeFovApplied = false
+			scopeLastFov = nil
+			setFovOverride(false, tonumber(Config.SniperScopeBaseFov) or 70)
+		end
+		applyScopePostFx(false)
+		if savedMouseSensitivity ~= nil then
+			UserInputService.MouseDeltaSensitivity = savedMouseSensitivity
+			savedMouseSensitivity = nil
+		end
+		if scopeGui then
+			scopeGui.Enabled = false
+		end
+		if scopeRenderConn then
+			scopeRenderConn:Disconnect()
+			scopeRenderConn = nil
+		end
 		if fireHoldHeartbeatConn then
 			fireHoldHeartbeatConn:Disconnect()
 			fireHoldHeartbeatConn = nil
@@ -326,13 +803,6 @@ local function bindTool(tool: Tool, options: { LocalPlayer: Player })
 	else
 		barrel = SniperWeaponPartResolve.findFirstBasePartNamed(tool, barrelName)
 	end
-
-	local localPlayer = options.LocalPlayer
-	local localNextAllowedShotAt = 0
-	local localReloadEndsAt = 0
-	local lastObservedReloadEndsAt = 0
-	local lastReloadSoundAt = -math.huge
-	local lastReloadAnimAt = -math.huge
 
 	local function readAmmoAndMag(): (number?, number?)
 		local ammo = tool:GetAttribute(SniperGunStats.ToolAttrAmmo)
@@ -405,6 +875,7 @@ local function bindTool(tool: Tool, options: { LocalPlayer: Player })
 			if reloadEndsAt > nowServer and reloadEndsAt > lastObservedReloadEndsAt then
 				playReloadSoundIfNeeded(nowServer)
 				playReloadAnimationIfNeeded("server-reload-attr", math.max(0.05, reloadEndsAt - nowServer), nowServer)
+				ViewModelClient.setAimHeld(tool, false)
 			end
 			lastObservedReloadEndsAt = reloadEndsAt
 		else
@@ -496,6 +967,7 @@ local function bindTool(tool: Tool, options: { LocalPlayer: Player })
 		remotes.RequestReload:FireServer()
 		playReloadAnimationIfNeeded(triggerSource, stats.reloadDuration, nowServer)
 		localReloadEndsAt = nowServer + stats.reloadDuration
+		ViewModelClient.setAimHeld(tool, false)
 		playReloadSoundIfNeeded(nowServer)
 		return true
 	end
@@ -529,6 +1001,58 @@ local function bindTool(tool: Tool, options: { LocalPlayer: Player })
 			return
 		end
 		tryStartReload("manual-key", true)
+	end)
+
+	UserInputService.InputBegan:Connect(function(input: InputObject, gameProcessed: boolean)
+		if gameProcessed then
+			return
+		end
+		if input.UserInputType ~= Enum.UserInputType.MouseButton2 then
+			return
+		end
+		if not readAimEnabledFromGun() then
+			return
+		end
+		aimButtonHeld = true
+		if not isReloadBlockingAim() then
+			ViewModelClient.setAimHeld(tool, true)
+		else
+			ViewModelClient.setAimHeld(tool, false)
+		end
+	end)
+
+	UserInputService.InputEnded:Connect(function(input: InputObject, _gameProcessed: boolean)
+		if input.UserInputType ~= Enum.UserInputType.MouseButton2 then
+			return
+		end
+		aimButtonHeld = false
+		ViewModelClient.setAimHeld(tool, false)
+	end)
+
+	UserInputService.InputChanged:Connect(function(input: InputObject, gameProcessed: boolean)
+		if gameProcessed then
+			return
+		end
+		if input.UserInputType ~= Enum.UserInputType.MouseWheel then
+			return
+		end
+		if not ViewModelClient.isScopeActive(tool) then
+			return
+		end
+		local levels = getEffectiveScopeZoomLevels()
+		if #levels <= 1 then
+			return
+		end
+		local delta = input.Position.Z
+		if delta > 0 then
+			-- Wheel forward: more zoom (lower FOV) -> advance, clamped at max zoom.
+			scopeZoomIndex = math.min(#levels, scopeZoomIndex + 1)
+			scopeLogThrottled("wheel", 0.05, "wheel up -> zoomIndex=%d/%d", scopeZoomIndex, #levels)
+		elseif delta < 0 then
+			-- Wheel back: less zoom (higher FOV) -> retreat, clamped at min zoom.
+			scopeZoomIndex = math.max(1, scopeZoomIndex - 1)
+			scopeLogThrottled("wheel", 0.05, "wheel down -> zoomIndex=%d/%d", scopeZoomIndex, #levels)
+		end
 	end)
 
 	local function tryFire()
@@ -640,6 +1164,11 @@ local function bindTool(tool: Tool, options: { LocalPlayer: Player })
 		end
 
 		SniperViewModelAnimator.fireRecoil(localPlayer)
+		if ViewModelClient.isScopeActive(tool) then
+			scopeRecoilPitchDeg += (tonumber(Config.SniperScopeRecoilKickPitchDegrees) or 1.2)
+			scopeRecoilYawSign = (scopeRecoilYawSign == 1) and -1 or 1
+			scopeRecoilYawDeg += (tonumber(Config.SniperScopeRecoilKickYawDegrees) or 0.22) * scopeRecoilYawSign
+		end
 
 		spawnPhysicalCasing(tool, localPlayer)
 
@@ -689,6 +1218,163 @@ local function bindTool(tool: Tool, options: { LocalPlayer: Player })
 		end
 		tryFire()
 	end)
+
+	local function scopeTick(dt: number)
+		local aimEnabled = readAimEnabledFromGun()
+		if Config.SniperScopeEnabled == false or not aimEnabled then
+			aimButtonHeld = false
+			ViewModelClient.setAimHeld(tool, false)
+			if scopedVisualActive or scopedFovApplied then
+				local camera = Workspace.CurrentCamera
+				if camera then
+					if math.abs(scopeAppliedPitchRad) > 1e-6 or math.abs(scopeAppliedYawRad) > 1e-6 then
+						camera.CFrame = camera.CFrame * CFrame.Angles(-scopeAppliedPitchRad, -scopeAppliedYawRad, 0)
+					end
+					if math.abs(scopeAppliedForwardStuds) > 1e-6 then
+						camera.CFrame = camera.CFrame * CFrame.new(0, 0, scopeAppliedForwardStuds)
+					end
+				end
+				scopeAppliedPitchRad = 0
+				scopeAppliedYawRad = 0
+				scopeAppliedForwardStuds = 0
+				if scopeFovApplied then
+					scopeFovApplied = false
+					scopeLastFov = nil
+					setFovOverride(false, tonumber(Config.SniperScopeBaseFov) or 70)
+					applyScopePostFx(false)
+				end
+				if savedMouseSensitivity ~= nil then
+					UserInputService.MouseDeltaSensitivity = savedMouseSensitivity
+					savedMouseSensitivity = nil
+				end
+				scopedVisualActive = false
+				scopedFovApplied = false
+				setScopeVisualActive(false, 1)
+			end
+			return
+		end
+		local scopedNow = ViewModelClient.isScopeActive(tool)
+		local levels = getEffectiveScopeZoomLevels()
+		if scopeZoomIndex < 1 or scopeZoomIndex > #levels then
+			scopeZoomIndex = 1
+		end
+		local targetZoom = levels[scopeZoomIndex]
+		local nowServer = Workspace:GetServerTimeNow()
+		local canAimNow = not isReloadBlockingAim(nowServer)
+		if aimButtonHeld and canAimNow then
+			ViewModelClient.setAimHeld(tool, true)
+		else
+			ViewModelClient.setAimHeld(tool, false)
+		end
+		if scopedNow then
+			if not scopedVisualActive then
+				scopedVisualActive = true
+				scopeLogThrottled("enter", 0.01, "entered scope (zoomIndex=%d zoom=%.3f)", scopeZoomIndex, targetZoom)
+			end
+			setScopeVisualActive(true, targetZoom)
+			if Config.SniperScopeUseFovZoom ~= false then
+				local targetFov = zoomLevelToFov(targetZoom)
+				if scopeLastFov == nil or math.abs(targetFov - scopeLastFov) > 1e-4 then
+					setFovOverride(true, targetFov)
+					scopeLastFov = targetFov
+				end
+				if not scopeFovApplied then
+					scopeFovApplied = true
+					applyScopePostFx(true)
+				end
+				if savedMouseSensitivity == nil then
+					savedMouseSensitivity = UserInputService.MouseDeltaSensitivity
+				end
+				UserInputService.MouseDeltaSensitivity = tonumber(Config.SniperScopeMouseSensitivity) or 0.35
+			end
+			scopedFovApplied = true
+			if scopeReticleRoot then
+				scopeReticleRoot.Position = UDim2.fromScale(0.5, 0.5)
+			end
+			local camera = Workspace.CurrentCamera
+			if camera then
+				if scopeLastCameraCf then
+					local posDrift = (camera.CFrame.Position - scopeLastCameraCf.Position).Magnitude
+					if posDrift > 0.08 then
+						scopeLogThrottled(
+							"camera_override",
+							0.15,
+							"camera drift before scope apply (possible override): %.4f studs",
+							posDrift
+						)
+					end
+				end
+				local targetForwardStuds = 0
+				if Config.SniperScopeUseFovZoom == false then
+					targetForwardStuds = resolveScopeForwardTargetStuds(localPlayer.Character, targetZoom)
+				end
+				local deltaForward = targetForwardStuds - scopeAppliedForwardStuds
+				scopeAppliedForwardStuds = targetForwardStuds
+				if math.abs(deltaForward) > 1e-6 then
+					camera.CFrame = camera.CFrame * CFrame.new(0, 0, -deltaForward)
+					scopeLogThrottled(
+						"forward_apply",
+						0.12,
+						"forward apply: zoom=%.2f target=%.3f delta=%.3f",
+						targetZoom,
+						targetForwardStuds,
+						deltaForward
+					)
+				end
+
+				local t = os.clock()
+				local breathSpeed = tonumber(Config.SniperScopeBreathSpeed) or 1.1
+				local breathPitch = (tonumber(Config.SniperScopeBreathPitchDegrees) or 0.24) * math.sin(t * breathSpeed)
+				local breathYaw = (tonumber(Config.SniperScopeBreathYawDegrees) or 0.18) * math.cos(t * breathSpeed * 0.87)
+				local recoilRecovery = tonumber(Config.SniperScopeRecoilRecoveryPerSecond) or 8.5
+				local damp = math.clamp(recoilRecovery * math.max(0, dt), 0, 1)
+				scopeRecoilPitchDeg = scopeRecoilPitchDeg + (0 - scopeRecoilPitchDeg) * damp
+				scopeRecoilYawDeg = scopeRecoilYawDeg + (0 - scopeRecoilYawDeg) * damp
+				local targetPitchRad = math.rad(-(breathPitch + scopeRecoilPitchDeg))
+				local targetYawRad = math.rad(breathYaw + scopeRecoilYawDeg)
+				local deltaPitch = targetPitchRad - scopeAppliedPitchRad
+				local deltaYaw = targetYawRad - scopeAppliedYawRad
+				scopeAppliedPitchRad = targetPitchRad
+				scopeAppliedYawRad = targetYawRad
+				camera.CFrame = camera.CFrame * CFrame.Angles(deltaPitch, deltaYaw, 0)
+				scopeLastCameraCf = camera.CFrame
+			end
+		else
+			if scopedVisualActive or scopedFovApplied then
+				local camera = Workspace.CurrentCamera
+				if camera then
+					if math.abs(scopeAppliedPitchRad) > 1e-6 or math.abs(scopeAppliedYawRad) > 1e-6 then
+						camera.CFrame = camera.CFrame * CFrame.Angles(-scopeAppliedPitchRad, -scopeAppliedYawRad, 0)
+					end
+					if math.abs(scopeAppliedForwardStuds) > 1e-6 then
+						camera.CFrame = camera.CFrame * CFrame.new(0, 0, scopeAppliedForwardStuds)
+					end
+				end
+				scopeAppliedPitchRad = 0
+				scopeAppliedYawRad = 0
+				scopeAppliedForwardStuds = 0
+				if scopeFovApplied then
+					scopeFovApplied = false
+					scopeLastFov = nil
+					setFovOverride(false, tonumber(Config.SniperScopeBaseFov) or 70)
+					applyScopePostFx(false)
+				end
+				if savedMouseSensitivity ~= nil then
+					UserInputService.MouseDeltaSensitivity = savedMouseSensitivity
+					savedMouseSensitivity = nil
+				end
+				scopedVisualActive = false
+				scopedFovApplied = false
+				setScopeVisualActive(false, targetZoom)
+				scopeRecoilPitchDeg = 0
+				scopeRecoilYawDeg = 0
+				scopeLastCameraCf = nil
+				scopeLogThrottled("exit", 0.01, "exit scope")
+			end
+		end
+	end
+	-- Use RenderStepped (not BindToRenderStep) so this runs after CameraDynamics' camera rewrite.
+	scopeRenderConn = RunService.RenderStepped:Connect(scopeTick)
 
 	if Config.SniperVirtualInventoryEnabled then
 		UserInputService.InputBegan:Connect(function(input: InputObject, gameProcessed: boolean)

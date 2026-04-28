@@ -64,6 +64,7 @@ ensureRemoteFunction(remotesFolder, "PlaytimeClaim")
 ensureRemoteEvent(remotesFolder, "CurrencyUpdated")
 ensureRemoteFunction(remotesFolder, "RequestBalances")
 ensureRemoteFunction(remotesFolder, "RequestSpendCurrency")
+ensureRemoteEvent(remotesFolder, "KillRewardEvent")
 
 -- SECURITY: Only create debug remotes in Studio environment
 if RunService:IsStudio() then

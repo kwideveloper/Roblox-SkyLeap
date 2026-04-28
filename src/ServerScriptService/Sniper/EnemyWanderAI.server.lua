@@ -9,7 +9,12 @@ local Workspace = game:GetService("Workspace")
 local Config = require(ReplicatedStorage:WaitForChild("Sniper"):WaitForChild("Config"))
 
 local ENEMY_TAG = Config.EnemyTag
+local AI_TAG = Config.EnemyAiTag or "IA"
 local rng = Random.new()
+
+local function canEnemyMove(instance: Instance): boolean
+	return CollectionService:HasTag(instance, ENEMY_TAG) and CollectionService:HasTag(instance, AI_TAG)
+end
 
 local function getRoot(model: Model): BasePart?
 	local r = model:FindFirstChild("HumanoidRootPart")
@@ -94,7 +99,7 @@ local function followPath(model: Model, humanoid: Humanoid, root: BasePart, goal
 	local skipStartDist = math.min(reachR, 2)
 
 	for i, wp in ipairs(waypoints) do
-		if not model.Parent or humanoid.Health <= 0 or root.Anchored then
+		if not model.Parent or humanoid.Health <= 0 or root.Anchored or not canEnemyMove(model) then
 			return true
 		end
 
@@ -113,6 +118,9 @@ local function followPath(model: Model, humanoid: Humanoid, root: BasePart, goal
 
 			local t0 = os.clock()
 			while model.Parent and humanoid.Health > 0 do
+				if not canEnemyMove(model) then
+					break
+				end
 				if (root.Position - wp.Position).Magnitude <= reachR then
 					break
 				end
@@ -133,9 +141,15 @@ end
 
 local function runWanderLoop(model: Model, humanoid: Humanoid, root: BasePart)
 	while model.Parent and humanoid.Health > 0 do
+		if not canEnemyMove(model) then
+			break
+		end
 		local waitSec = rng:NextNumber(Config.EnemyWanderMinWaitSeconds, Config.EnemyWanderMaxWaitSeconds)
 		task.wait(waitSec)
 		if not model.Parent or humanoid.Health <= 0 then
+			break
+		end
+		if not canEnemyMove(model) then
 			break
 		end
 		if root.Anchored then
@@ -164,7 +178,7 @@ local function tryStartWander(instance: Instance)
 	end
 
 	task.defer(function()
-		if not instance.Parent or not CollectionService:HasTag(instance, ENEMY_TAG) then
+		if not instance.Parent or not canEnemyMove(instance) then
 			return
 		end
 
@@ -201,4 +215,12 @@ end
 
 CollectionService:GetInstanceAddedSignal(ENEMY_TAG):Connect(function(inst)
 	tryStartWander(inst)
+end)
+
+CollectionService:GetInstanceAddedSignal(AI_TAG):Connect(function(inst)
+	if CollectionService:HasTag(inst, ENEMY_TAG) then
+		-- Allow starting wander later when IA tag is applied dynamically.
+		inst:SetAttribute("_EnemyWanderStarted", nil)
+		tryStartWander(inst)
+	end
 end)
