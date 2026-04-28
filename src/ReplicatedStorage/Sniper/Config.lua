@@ -62,7 +62,7 @@ return {
 
 	-- First-person viewmodel (client). Templates: Folder ReplicatedStorage.[ViewModelsFolderName] contains one or more root Models (e.g. Sniper).
 	-- Resolution order: Tool attach() override → Player SkyLeapSniperViewModelId → first root Model under ViewModels (alphabetical) → SniperViewModelName (if non-empty).
-	-- Inside each template: Model "Gun" = base weapon; optional Folder "Skins" holds cosmetic weapon Models; equipped skin = Player attribute SkyLeapSniperSkinId (see SniperViewModelAppearance).
+	-- Inside each template: Model "Gun" = base weapon; optional Folder "Skins" (Folder per skin). Skin layout: flat `Skins/<Skin>/BodySkin` (Union/Model) or nested `Skins/<Skin>/Body/BodySkin`. Legacy: Model under Skins. Equipped skin = Player attribute SkyLeapSniperSkinId (see SniperViewModelAppearance).
 	SniperViewModelEnabled = true,
 	ViewModelsFolderName = "ViewModels",
 	SniperViewModelName = "Sniper",
@@ -88,21 +88,49 @@ return {
 	SniperViewModelSetMouseTargetFilter = true,
 	-- Remove ClickDetectors, ProximityPrompts, DragDetectors from the clone; set CanTouch = false on parts.
 	SniperViewModelStripWorldInteractables = true,
+	-- Skin texture animation (Texture.OffsetStudsU / V). Set Animation / Speed on:
+	-- Skins/<Skin>/<Layer>/ (Folder attrs), or <Layer>Part, or Skins/<Skin>/ (skin root = all layers). Copied to Gun/<Layer>Skin.
+	-- Legacy: same attrs on each Texture. Defaults:
+	SniperViewModelSkinTextureAnimationEnabled = true,
+	SniperViewModelSkinAnimDefaultSpeedU = 0,
+	SniperViewModelSkinAnimDefaultSpeedV = 0,
+	-- UnionOperation (CSG): tiled Texture UVs are often broken/invisible; the same image as Decal usually works.
+	-- When true, skin template Textures are applied as Decals on Union mounts. UV scroll (OffsetStuds) needs Part/MeshPart, not Union.
+	SniperViewModelSkinPreferDecalOnUnion = true,
+	-- Verbose logs for skin application (layers, mounts, texture cloning, preload). Turn off in production.
+	SniperViewModelSkinDebug = true,
 
 	-- Viewmodel animation (client): same AnimationIds for every viewmodel clone. Needs a Motor6D (or R15) rig; only PrimaryPart stays anchored.
 	-- Set at least one rbxassetid below to enable; leave all empty to keep the old fully-anchored static viewmodel.
+	-- Per-weapon StringValues: Folder `Animations` on the viewmodel root or under `Gun` (e.g. `Walk`, `Run`, `Shoot`, `Idle`, `Jump`, `Inspect`, `Reload`, `Collider`, …).
 	SniperViewModelAnimationsEnabled = false,
 	SniperViewModelAnimIdle = "",
 	SniperViewModelAnimWalk = "",
 	SniperViewModelAnimRun = "",
 	SniperViewModelAnimJump = "",
 	SniperViewModelAnimRecoil = "",
+	-- Optional one-shot fire pose (viewmodel `Animations/Shoot` StringValue preferred). When set and loaded, used instead of Recoil on fire; inspect is stopped immediately.
+	-- When true (default), a new shot does not restart Shoot until the current clip reaches the end (full play-through).
+	SniperViewModelAnimShootMustFinish = true,
+	-- Seconds from end-of-track before Shoot is treated as finished (timing / blend tolerance).
+	SniperViewModelAnimShootCompleteMargin = 0.045,
+	SniperViewModelAnimShoot = "",
 	-- One-shot inspect (plays on key; same asset for all viewmodels). Default key: F.
 	SniperViewModelAnimInspect = "",
 	SniperViewModelInspectKeyCode = Enum.KeyCode.F,
 	SniperViewModelAnimInspectFadeIn = 0.06,
+	-- Fade used when Inspect is cancelled by shoot/reload (Stop(0) often leaves Motor6Ds stuck mid-pose). 0 = hard cut.
+	SniperViewModelAnimInspectInterruptStopFade = 0.1,
 	SniperViewModelAnimInspectSpeed = 1,
+	-- Idle vs Walk/run: Prefer Humanoid.MoveDirection (no keys / stick ~= moving) — HRP velocity often stays noisy when standing still.
+	SniperViewModelAnimIdleUseMoveDirection = true,
+	-- Idle when grounded and MoveDirection.Magnitude <= this (typical WASD idle ~0).
+	SniperViewModelAnimIdleMoveDirectionMax = 0.1,
+	-- Fallback when `IdleUseMoveDirection` is false: horizontal speed below this → Idle (studs/s).
 	SniperViewModelAnimIdleSpeedMax = 0.35,
+	-- If true (default): viewmodel Run when moving above idle speed and Shift is held; Walk otherwise.
+	-- If false: legacy — Run when horizontal speed >= SniperViewModelAnimRunSpeedThreshold (no Shift).
+	SniperViewModelAnimRunUseShiftKey = true,
 	SniperViewModelAnimRunSpeedThreshold = 14,
 	SniperViewModelAnimCrossFade = 0.12,
 	SniperViewModelAnimRecoilFadeIn = 0.04,
@@ -156,8 +184,26 @@ return {
 	-- Fallback when the Tool is only in Backpack and the viewmodel has no CasingEject part: spawn in camera space.
 	SniperCasingEjectCameraCFrame = CFrame.new(0.14, -0.12, -0.55),
 
-	-- Time after each shot before another shot is accepted (seconds)
+	-- Time after each shot before another shot is accepted (seconds). Used as default reload duration + shot pacing when Gun has no attributes.
 	ReloadSeconds = 1.2,
+	-- Default magazine size when Model "Gun" is missing or has no MagazineSize attribute (bolt sniper = 1).
+	SniperDefaultMagazineSize = 1,
+	-- Optional default rounds per second when Gun has no FireRate / ShotCooldown (0 = use ReloadSeconds as shot cooldown in SniperGunStats).
+	SniperDefaultFireRate = 0,
+
+	-- Ammo + reload HUD (client): magazine count + reload ring while Sniper is relevant.
+	SniperAmmoHudEnabled = true,
+	SniperAmmoHudDisplayOrder = 78,
+	-- Client: manual reload (mag not full). Default R.
+	SniperReloadKeyCode = Enum.KeyCode.R,
+
+	--[[ Gun Model (ReplicatedStorage viewmodel template → child "Gun", or same structure on the Tool): NumberAttributes
+	    MagazineSize   — rounds per magazine (integer >= 1). Default: SniperDefaultMagazineSize.
+	    ReloadDuration or ReloadTime — seconds to refill magazine when empty or when pressing reload. Default: ReloadSeconds.
+	    Damage         — 0 or omitted = one-shot lethal (Health set to 0). Positive = subtract that much Health per hit.
+	    FireRate       — rounds per second cap between shots (used if ShotCooldown is not set).
+	    ShotCooldown   — minimum seconds between shots; overrides FireRate when > 0.
+	]]
 
 	-- Server: while airborne with sniper, a hitscan-only plate sits under the player’s feet (Workspace). Shooting down hits it first → upward boost (works in jump; no angle math on client).
 	SniperAirDownBoostEnabled = true,
@@ -289,6 +335,16 @@ return {
 	EnemyHealthBarBackgroundColor = Color3.fromRGB(35, 35, 40),
 	EnemyHealthBarFillColor = Color3.fromRGB(210, 55, 65),
 	EnemyNameTextColor = Color3.fromRGB(255, 255, 255),
+	-- Client highlights: other players + Enemy-tagged instances (see EnemyTargetHighlight.client.lua).
+	EnemyTargetHighlightEnabled = true,
+	EnemyTargetHighlightOutlineColor = Color3.fromRGB(170, 170, 170),
+	-- Lower transparency looks visually "thicker" since Highlight does not expose a direct thickness setting on all runtimes.
+	EnemyTargetHighlightOutlineTransparency = 0.32,
+	EnemyTargetHighlightFillColor = Color3.fromRGB(255, 45, 45),
+	-- Very subtle red interior.
+	EnemyTargetHighlightFillTransparency = 0.95,
+	-- Occluded = hidden by walls (does not render through geometry).
+	EnemyTargetHighlightDepthMode = Enum.HighlightDepthMode.Occluded,
 
 	-- Wander AI for Enemy-tagged Models (see EnemyWanderAI.server.lua). BaseParts are auto-wrapped into a Model + Humanoid in EnemyDummySetup.
 	EnemyWanderEnabled = true,

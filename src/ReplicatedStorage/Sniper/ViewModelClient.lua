@@ -13,6 +13,7 @@ local SniperLoadoutState = require(script.Parent.SniperLoadoutState)
 local RigHelper = require(script.Parent.ViewModelAnimationRigHelper)
 local SniperViewModelAnimator = require(script.Parent.SniperViewModelAnimator)
 local SniperViewModelAppearance = require(script.Parent.SniperViewModelAppearance)
+local SniperViewModelSkinAnimator = require(script.Parent.SniperViewModelSkinAnimator)
 
 local RENDER_STEP_NAME = "SkyLeapSniperViewModel"
 
@@ -138,6 +139,71 @@ local function stripViewmodelClone(clone: Model)
 	end
 end
 
+local function findFirstBasePartByNames(root: Instance, names: { string }): BasePart?
+	local wanted: { [string]: boolean } = {}
+	for _, name in ipairs(names) do
+		wanted[string.lower(name)] = true
+	end
+	for _, d in ipairs(root:GetDescendants()) do
+		if d:IsA("BasePart") and wanted[string.lower(d.Name)] then
+			return d
+		end
+	end
+	return nil
+end
+
+local function findCharacterSkinColor(character: Model): Color3?
+	for _, d in ipairs(character:GetDescendants()) do
+		if d:IsA("MeshPart") and string.lower(d.Name) == "head" then
+			return d.Color
+		end
+	end
+
+	local rightHand = findFirstBasePartByNames(character, { "RightHand", "Right Arm", "RightLowerArm", "RightUpperArm" })
+	if rightHand then
+		return rightHand.Color
+	end
+	local leftHand = findFirstBasePartByNames(character, { "LeftHand", "Left Arm", "LeftLowerArm", "LeftUpperArm" })
+	if leftHand then
+		return leftHand.Color
+	end
+	local head = findFirstBasePartByNames(character, { "Head" })
+	if head then
+		return head.Color
+	end
+	return nil
+end
+
+local function applyViewModelArmColorsFromCharacter(clone: Model, character: Model?)
+	if not character then
+		return
+	end
+
+	local armsModel = clone:FindFirstChild("Arms", true)
+	if not armsModel or not armsModel:IsA("Model") then
+		return
+	end
+
+	local skinColor = findCharacterSkinColor(character)
+
+	local function applyHandColor(armName: string, handPartName: string)
+		if not skinColor then
+			return
+		end
+		local arm = armsModel:FindFirstChild(armName)
+		if not arm then
+			return
+		end
+		local hand = arm:FindFirstChild(handPartName)
+		if hand and hand:IsA("BasePart") then
+			hand.Color = skinColor
+		end
+	end
+
+	applyHandColor("LeftArm", "LeftHand")
+	applyHandColor("RightArm", "RightHand")
+end
+
 local function suppressWorldArmsForSniperViewmodel(char: Model)
 	for _, d in ipairs(char:GetDescendants()) do
 		if d:IsA("BasePart") and d:FindFirstAncestorOfClass("Accessory") == nil then
@@ -214,13 +280,13 @@ local function resolveViewModelTemplateExplicit(folder: Instance, templateId: st
 	return "", nil
 end
 
-local function prepareClone(clone: Model, skinId: string)
+local function prepareClone(clone: Model, skinId: string, character: Model?)
 	stripViewmodelClone(clone)
 	if not ensurePrimaryPart(clone) then
 		return false
 	end
 	local primary = clone.PrimaryPart :: BasePart
-	local useAnimatedRig = SniperViewModelAnimator.hasConfiguredAnimations()
+	local useAnimatedRig = SniperViewModelAnimator.hasConfiguredAnimations(clone)
 	if useAnimatedRig then
 		RigHelper.applyAnchorStrategyForAnimation(clone, primary)
 	else
@@ -235,6 +301,7 @@ local function prepareClone(clone: Model, skinId: string)
 		end
 	end
 	SniperViewModelAppearance.applyGunSkinSwap(clone, skinId)
+	applyViewModelArmColorsFromCharacter(clone, character)
 	if useAnimatedRig then
 		RigHelper.applyAnchorStrategyForAnimation(clone, primary)
 	else
@@ -294,6 +361,7 @@ local states: {
 		attachTemplateOverride: string?,
 		clone: Model?,
 		animHandle: SniperViewModelAnimator.AnimatorHandle?,
+		skinAnimHandle: SniperViewModelSkinAnimator.SkinAnimatorHandle?,
 		pointerSuppressActive: boolean?,
 		savedMouseTargetFilter: Instance?,
 		mouseFilterApplied: boolean?,
@@ -338,7 +406,7 @@ local function applyMouseTargetFilter(state: { player: Player, clone: Model?, sa
 	mouse.TargetFilter = clone
 end
 
-local function destroyClone(state: { clone: Model?, animHandle: SniperViewModelAnimator.AnimatorHandle?, player: Player, pointerSuppressActive: boolean?, savedMouseTargetFilter: Instance?, mouseFilterApplied: boolean? })
+local function destroyClone(state: { clone: Model?, animHandle: SniperViewModelAnimator.AnimatorHandle?, skinAnimHandle: SniperViewModelSkinAnimator.SkinAnimatorHandle?, player: Player, pointerSuppressActive: boolean?, savedMouseTargetFilter: Instance?, mouseFilterApplied: boolean? })
 	if state.pointerSuppressActive then
 		state.pointerSuppressActive = false
 		SniperPointerSuppress.pop()
@@ -347,6 +415,10 @@ local function destroyClone(state: { clone: Model?, animHandle: SniperViewModelA
 	if state.animHandle then
 		state.animHandle:destroy()
 		state.animHandle = nil
+	end
+	if state.skinAnimHandle then
+		state.skinAnimHandle:destroy()
+		state.skinAnimHandle = nil
 	end
 	if state.clone then
 		camBoneRelCache[state.clone] = nil
@@ -385,12 +457,13 @@ local function updateOne(state: {
 	attachTemplateOverride: string?,
 	clone: Model?,
 	animHandle: SniperViewModelAnimator.AnimatorHandle?,
+	skinAnimHandle: SniperViewModelSkinAnimator.SkinAnimatorHandle?,
 	pointerSuppressActive: boolean?,
 	savedMouseTargetFilter: Instance?,
 	mouseFilterApplied: boolean?,
 	_visualKey: string?,
 	attrConns: { RBXScriptConnection }?,
-})
+}, dt: number)
 	if not shouldShowViewmodel(state) then
 		destroyClone(state)
 		return
@@ -436,7 +509,7 @@ local function updateOne(state: {
 		destroyClone(state)
 		local clone = template:Clone()
 		clone.Name = "SniperViewModelActive"
-		if not prepareClone(clone, desiredSkin) then
+		if not prepareClone(clone, desiredSkin, state.player.Character) then
 			clone:Destroy()
 			return
 		end
@@ -456,7 +529,8 @@ local function updateOne(state: {
 			SniperPointerSuppress.push()
 		end
 		state.animHandle = SniperViewModelAnimator.attachToClone(clone, state.player)
-		if SniperViewModelAnimator.hasConfiguredAnimations() and not state.animHandle then
+		state.skinAnimHandle = SniperViewModelSkinAnimator.attachToClone(clone)
+		if SniperViewModelAnimator.hasConfiguredAnimations(clone) and not state.animHandle then
 			RigHelper.applyStaticAnchors(clone)
 		end
 	end
@@ -473,16 +547,19 @@ local function updateOne(state: {
 	else
 		state.clone:PivotTo(cam.CFrame * offset)
 	end
+	if state.skinAnimHandle then
+		state.skinAnimHandle:step(dt)
+	end
 	applyMouseTargetFilter(state)
 end
 
-local function tickAll()
+local function tickAll(dt: number)
 	for tool, state in pairs(states) do
 		if not tool.Parent then
 			destroyClone(state)
 			states[tool] = nil
 		else
-			updateOne(state)
+			updateOne(state, dt)
 		end
 	end
 	if next(states) == nil then
@@ -568,7 +645,7 @@ function ViewModelClient.createSpectatorViewModelClone(viewModelTemplateId: stri
 	local skin = SniperViewModelAppearance.normalizeId(skinId)
 	local clone = template:Clone()
 	clone.Name = "SniperViewModelSpectator"
-	if not prepareClone(clone, skin) then
+	if not prepareClone(clone, skin, nil) then
 		clone:Destroy()
 		return nil
 	end
@@ -590,6 +667,19 @@ function ViewModelClient.forgetViewmodelClone(clone: Model?)
 end
 
 -- viewModelName: optional Studio template name override (highest priority). Otherwise Player attributes + Config + first ViewModels child.
+-- Live "Gun" model from the active viewmodel clone (for client-side attribute reads). Nil if clone not built yet.
+function ViewModelClient.getGunModelForTool(tool: Tool): Model?
+	local state = states[tool]
+	if not state or not state.clone then
+		return nil
+	end
+	local g = state.clone:FindFirstChild(SniperViewModelAppearance.GunModelName)
+	if g and g:IsA("Model") then
+		return g
+	end
+	return nil
+end
+
 function ViewModelClient.attach(tool: Tool, player: Player, viewModelName: string?)
 	if tool:GetAttribute("_SniperViewModelAttached") then
 		return
@@ -607,6 +697,7 @@ function ViewModelClient.attach(tool: Tool, player: Player, viewModelName: strin
 		attachTemplateOverride = override,
 		clone = nil,
 		animHandle = nil,
+		skinAnimHandle = nil,
 		pointerSuppressActive = false,
 		savedMouseTargetFilter = nil,
 		mouseFilterApplied = false,

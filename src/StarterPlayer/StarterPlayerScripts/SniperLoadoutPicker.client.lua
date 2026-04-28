@@ -80,7 +80,7 @@ local function preparePreviewClone(clone: Model)
 	end
 end
 
-local function fillViewport(viewport: ViewportFrame, source: Model): any
+local function fillViewport(viewport: ViewportFrame, source: Model, templateForSkin: Model?, applySkinId: string?): any
 	local worldModel = Instance.new("WorldModel")
 	worldModel.Parent = viewport
 
@@ -91,6 +91,9 @@ local function fillViewport(viewport: ViewportFrame, source: Model): any
 
 	local clone = source:Clone()
 	preparePreviewClone(clone)
+	if applySkinId and applySkinId ~= "" and templateForSkin and source == templateForSkin then
+		Appearance.applyGunSkinSwap(clone, applySkinId)
+	end
 	clone.Parent = worldModel
 
 	local basePivot = clone:GetPivot()
@@ -273,7 +276,8 @@ local function rebuildSkinsList(template: Model)
 
 		local source = Catalog.getPreviewSourceModel(template, skinName)
 		if source then
-			local entry = fillViewport(vp, source)
+			local applySkinId = (source == template and skinName ~= "") and skinName or nil
+			local entry = fillViewport(vp, source, template, applySkinId)
 			row.Destroying:Connect(function()
 				killRotationEntry(entry)
 			end)

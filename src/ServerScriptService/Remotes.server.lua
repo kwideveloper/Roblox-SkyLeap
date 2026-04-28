@@ -108,6 +108,7 @@ ensureRemoteEvent(remotesFolder, "ZombieTagAction")
 
 -- Sniper (hitscan laser): client request + FX replication to other clients
 ensureRemoteEvent(remotesFolder, "SniperRequestFire")
+ensureRemoteEvent(remotesFolder, "SniperRequestReload")
 ensureRemoteEvent(remotesFolder, "SniperLaserFx")
 ensureRemoteEvent(remotesFolder, "SniperAudioFeedback")
 ensureRemoteEvent(remotesFolder, "DeathSpectatePayload")

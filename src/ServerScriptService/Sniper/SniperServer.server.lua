@@ -9,7 +9,9 @@ local ServerScriptService = game:GetService("ServerScriptService")
 local Workspace = game:GetService("Workspace")
 
 local Config = require(ReplicatedStorage:WaitForChild("Sniper"):WaitForChild("Config"))
-local SniperWeaponPartResolve = require(ReplicatedStorage:WaitForChild("Sniper"):WaitForChild("SniperWeaponPartResolve"))
+local SniperWeaponPartResolve =
+	require(ReplicatedStorage:WaitForChild("Sniper"):WaitForChild("SniperWeaponPartResolve"))
+local SniperGunStats = require(ReplicatedStorage:WaitForChild("Sniper"):WaitForChild("SniperGunStats"))
 
 local function sniperDebug(fmt: string, ...: any)
 	if Config.SniperDebugApplyHit ~= true then
@@ -51,11 +53,64 @@ end
 
 local remotesFolder = ReplicatedStorage:WaitForChild("Remotes")
 local requestFire = remotesFolder:WaitForChild("SniperRequestFire")
+local requestReload = remotesFolder:WaitForChild("SniperRequestReload")
 local laserFx = remotesFolder:WaitForChild("SniperLaserFx")
 local audioFeedback = remotesFolder:WaitForChild("SniperAudioFeedback")
 local padTriggered = remotesFolder:WaitForChild("PadTriggered")
 
-local lastShotClock: { [Player]: number } = {}
+type AmmoState = {
+	ammo: number,
+	reloadEndServerTime: number,
+	nextShotServerTime: number,
+}
+
+local ammoByTool: { [Tool]: AmmoState } = {}
+
+local function syncToolAmmoAttrs(tool: Tool, state: AmmoState, stats)
+	local reloadEndsAt = 0
+	if state.reloadEndServerTime > 0 then
+		reloadEndsAt = state.reloadEndServerTime
+	end
+	tool:SetAttribute(SniperGunStats.ToolAttrAmmo, state.ammo)
+	tool:SetAttribute(SniperGunStats.ToolAttrMagSize, stats.magazineSize)
+	tool:SetAttribute(SniperGunStats.ToolAttrReloadEndsAt, reloadEndsAt)
+	tool:SetAttribute(SniperGunStats.ToolAttrNextShotAt, state.nextShotServerTime)
+end
+
+local function tryFinishReloadState(state: AmmoState, stats, nowServer: number)
+	if state.reloadEndServerTime > 0 and nowServer >= state.reloadEndServerTime then
+		state.ammo = stats.magazineSize
+		state.reloadEndServerTime = 0
+		-- Ready to fire immediately after a reload completes (do not extend shot pacing past reload).
+		state.nextShotServerTime = 0
+	end
+end
+
+local function getOrInitAmmoState(tool: Tool, player: Player, stats): AmmoState
+	local st = ammoByTool[tool]
+	if st then
+		return st
+	end
+	st = {
+		ammo = stats.magazineSize,
+		reloadEndServerTime = 0,
+		nextShotServerTime = 0,
+	}
+	ammoByTool[tool] = st
+	tool.Destroying:Connect(function()
+		ammoByTool[tool] = nil
+	end)
+	syncToolAmmoAttrs(tool, st, stats)
+	return st
+end
+
+local function refreshAmmoStateForTool(tool: Tool, player: Player, nowServer: number)
+	local stats = SniperGunStats.readForPlayerTool(player, tool)
+	local state = getOrInitAmmoState(tool, player, stats)
+	tryFinishReloadState(state, stats, nowServer)
+	syncToolAmmoAttrs(tool, state, stats)
+	return state, stats
+end
 -- Snapshot CharacterAutoLoads before sniper forces it off (must restore if DeathSpectate skips or fails).
 local sniperPreKillCharAutoLoads: { [Player]: boolean } = {}
 local airBoostProbeByPlayer: { [Player]: BasePart } = {}
@@ -260,18 +315,20 @@ local function isCharacterModelPart(hitPart: BasePart): boolean
 	return hum ~= nil
 end
 
-local function applyHit(shooter: Player, hitPart: BasePart): (string?, Player?)
+-- damage <= 0 means "lethal" (instant kill). damage > 0 subtracts from Humanoid.Health.
+local function applyHit(shooter: Player, hitPart: BasePart, damage: number): (string?, Player?)
 	local humanoid, model = resolveTargetHumanoid(hitPart)
 	if humanoid and model and humanoid.Health > 0 then
 		local victim = Players:GetPlayerFromCharacter(model)
 		sniperDebug(
-			"applyHit: part=%s asmRoot=%s hum=%s health=%.3f victim=%s self=%s",
+			"applyHit: part=%s asmRoot=%s hum=%s health=%.3f victim=%s self=%s dmg=%.3f",
 			hitPart:GetFullName(),
 			(hitPart:GetRootPart() and hitPart:GetRootPart():GetFullName()) or "?",
 			humanoid:GetFullName(),
 			humanoid.Health,
 			victim and victim.Name or "nil",
-			shooter.Name
+			shooter.Name,
+			damage
 		)
 		if victim == shooter then
 			sniperDebug("applyHit: blocked (self)")
@@ -283,38 +340,54 @@ local function applyHit(shooter: Player, hitPart: BasePart): (string?, Player?)
 				d:Destroy()
 			end
 		end
-		-- Snapshot autoload before lethal; set false only *after* Health hits 0 so the engine always applies the kill.
-		local preAutoLoads: boolean? = nil
-		if victim then
-			preAutoLoads = readCharacterAutoLoads(victim)
-		end
-		-- Some NPC / legacy rigs expose Humanoid without CanBeDamaged; never let this line abort the kill.
+		-- Some NPC / legacy rigs expose Humanoid without CanBeDamaged; never let this line abort damage.
 		pcall(function()
 			(humanoid :: any).CanBeDamaged = true
 		end)
-		humanoid.Health = 0
-		if humanoid.Health > 0 then
-			humanoid.Health = 0
+
+		local preAutoLoads: boolean? = nil
+		local willKill = damage <= 0 or humanoid.Health <= damage
+		if victim and willKill then
+			preAutoLoads = readCharacterAutoLoads(victim)
 		end
-		if victim then
+
+		if damage <= 0 then
+			humanoid.Health = 0
+			if humanoid.Health > 0 then
+				humanoid.Health = 0
+			end
+		else
+			humanoid.Health = math.max(0, humanoid.Health - damage)
+		end
+
+		local dead = humanoid.Health <= 0
+		if dead and victim then
 			sniperPreKillCharAutoLoads[victim] = preAutoLoads
 			writeCharacterAutoLoads(victim, false)
 		end
-		if victim then
+
+		if dead and victim then
 			return "player", victim
 		end
-		if model and CollectionService:HasTag(model, ENEMY_TAG) then
+		if dead and model and CollectionService:HasTag(model, ENEMY_TAG) then
 			sniperDebug("applyHit: result enemy tag path")
 			return "enemy", nil
 		end
-		sniperDebug("applyHit: result npc (no player victim)")
-		return "npc", nil
+		if dead then
+			sniperDebug("applyHit: result npc (no player victim)")
+			return "npc", nil
+		end
+		return nil, nil
 	end
 
 	if Config.SniperDebugApplyHit == true then
 		local ar = hitPart:GetRootPart()
 		if humanoid == nil then
-			sniperDebug("applyHit: no humanoid part=%s asmRoot=%s", hitPart:GetFullName(), ar and ar:GetFullName() or "nil")
+			sniperDebug(
+				"applyHit: no humanoid part=%s asmRoot=%s",
+				hitPart:GetFullName(),
+				ar and ar:GetFullName() or "nil"
+			)
 		elseif humanoid.Health <= 0 then
 			sniperDebug("applyHit: humanoid dead hum=%s health=%.3f", humanoid:GetFullName(), humanoid.Health)
 		elseif not model then
@@ -428,10 +501,21 @@ requestFire.OnServerEvent:Connect(function(player: Player, claimedOrigin: Vector
 		return
 	end
 
-	local now = os.clock()
-	local last = lastShotClock[player]
-	if last and (now - last) < Config.ReloadSeconds then
-		sniperDebugFireReject(player, "cooldown")
+	local nowServer = Workspace:GetServerTimeNow()
+	local ammoState, stats = refreshAmmoStateForTool(tool, player, nowServer)
+
+	if ammoState.reloadEndServerTime > 0 and nowServer < ammoState.reloadEndServerTime then
+		sniperDebugFireReject(player, "reloading")
+		return
+	end
+	if ammoState.ammo <= 0 then
+		ammoState.reloadEndServerTime = nowServer + stats.reloadDuration
+		syncToolAmmoAttrs(tool, ammoState, stats)
+		sniperDebugFireReject(player, "empty magazine -> auto reload")
+		return
+	end
+	if nowServer < ammoState.nextShotServerTime then
+		sniperDebugFireReject(player, "shot cooldown")
 		return
 	end
 
@@ -465,7 +549,15 @@ requestFire.OnServerEvent:Connect(function(player: Player, claimedOrigin: Vector
 		end
 		-- Camera ray can sit closer to HRP than Head in FP; allow either anchor.
 		if distHead > maxOrig and distHrp > maxOrig + 14 then
-			sniperDebugFireReject(player, string.format("claimed origin too far from head/hrp (dh=%.1f dr=%.1f max=%.1f)", distHead, distHrp, maxOrig))
+			sniperDebugFireReject(
+				player,
+				string.format(
+					"claimed origin too far from head/hrp (dh=%.1f dr=%.1f max=%.1f)",
+					distHead,
+					distHrp,
+					maxOrig
+				)
+			)
 			return
 		end
 		if not useClaimedOrigin then
@@ -480,7 +572,10 @@ requestFire.OnServerEvent:Connect(function(player: Player, claimedOrigin: Vector
 				local dot = math.clamp(barrelLook:Dot(dir), -1, 1)
 				local deg = math.deg(math.acos(dot))
 				if deg > Config.MaxAimVsMuzzleDegrees then
-					sniperDebugFireReject(player, string.format("muzzle vs aim deg=%.1f max=%.1f", deg, Config.MaxAimVsMuzzleDegrees))
+					sniperDebugFireReject(
+						player,
+						string.format("muzzle vs aim deg=%.1f max=%.1f", deg, Config.MaxAimVsMuzzleDegrees)
+					)
 					return
 				end
 			end
@@ -500,7 +595,10 @@ requestFire.OnServerEvent:Connect(function(player: Player, claimedOrigin: Vector
 				dR = (claimedOrigin - hrp2.Position).Magnitude
 			end
 			if dH > maxOrig2 and dR > maxOrig2 + 14 then
-				sniperDebugFireReject(player, string.format("claimed origin too far (head ray) dh=%.1f dr=%.1f max=%.1f", dH, dR, maxOrig2))
+				sniperDebugFireReject(
+					player,
+					string.format("claimed origin too far (head ray) dh=%.1f dr=%.1f max=%.1f", dH, dR, maxOrig2)
+				)
 				return
 			end
 		else
@@ -512,7 +610,10 @@ requestFire.OnServerEvent:Connect(function(player: Player, claimedOrigin: Vector
 			end
 			local drift = (barrel.Position - claimedOrigin).Magnitude
 			if drift > Config.MaxOriginDriftStuds then
-				sniperDebugFireReject(player, string.format("origin drift %.1f > max %.1f", drift, Config.MaxOriginDriftStuds))
+				sniperDebugFireReject(
+					player,
+					string.format("origin drift %.1f > max %.1f", drift, Config.MaxOriginDriftStuds)
+				)
 				return
 			end
 			if Config.UseMuzzleDirectionCheck then
@@ -560,7 +661,8 @@ requestFire.OnServerEvent:Connect(function(player: Player, claimedOrigin: Vector
 		if not inst or not inst:IsA("BasePart") then
 			return false
 		end
-		return inst:GetAttribute("SniperAirDownBoostProbe") == true and inst:GetAttribute("OwnerUserId") == player.UserId
+		return inst:GetAttribute("SniperAirDownBoostProbe") == true
+			and inst:GetAttribute("OwnerUserId") == player.UserId
 	end
 	if Config.SniperAirDownBoostFeetStompEnabled ~= false and Config.SniperAirDownBoostEnabled ~= false then
 		if not rayIsOwnAirProbe(result) then
@@ -579,13 +681,18 @@ requestFire.OnServerEvent:Connect(function(player: Player, claimedOrigin: Vector
 					local hum = character:FindFirstChildOfClass("Humanoid")
 					local root = character:FindFirstChild("HumanoidRootPart")
 					if hum and root and root:IsA("BasePart") and hum.FloorMaterial == Enum.Material.Air then
-						local consumed = Config.SniperAirDownBoostOncePerAir ~= false and airDownBoostConsumedUntilGround[player] == true
+						local consumed = Config.SniperAirDownBoostOncePerAir ~= false
+							and airDownBoostConsumedUntilGround[player] == true
 						if not consumed then
 							local stompDist = Config.SniperAirDownBoostFeetStompRayStuds
 							if type(stompDist) ~= "number" or stompDist <= 0 then
 								stompDist = (Config.SniperAirDownBoostProbeCenterBelowHrp or 3.6) + 3.5
 							end
-							local stomp = Workspace:Raycast(root.Position + Vector3.new(0, 0.25, 0), Vector3.new(0, -1, 0) * stompDist, params)
+							local stomp = Workspace:Raycast(
+								root.Position + Vector3.new(0, 0.25, 0),
+								Vector3.new(0, -1, 0) * stompDist,
+								params
+							)
 							if rayIsOwnAirProbe(stomp) then
 								result = stomp
 							end
@@ -657,7 +764,7 @@ requestFire.OnServerEvent:Connect(function(player: Player, claimedOrigin: Vector
 			elseif probeAttr == true then
 				-- Another player’s air probe; no damage / hole
 			else
-				hitKind, victimPlayer = applyHit(player, inst)
+				hitKind, victimPlayer = applyHit(player, inst, stats.damage)
 				if victimPlayer then
 					local savedAuto = sniperPreKillCharAutoLoads[victimPlayer]
 					sniperPreKillCharAutoLoads[victimPlayer] = nil
@@ -682,7 +789,14 @@ requestFire.OnServerEvent:Connect(function(player: Player, claimedOrigin: Vector
 		endPos = origin + dir * Config.MaxRange
 	end
 
-	lastShotClock[player] = now
+	tryFinishReloadState(ammoState, stats, Workspace:GetServerTimeNow())
+	ammoState.ammo -= 1
+	ammoState.nextShotServerTime = Workspace:GetServerTimeNow() + stats.shotCooldown
+	if ammoState.ammo <= 0 then
+		ammoState.reloadEndServerTime = Workspace:GetServerTimeNow() + stats.reloadDuration
+	end
+	syncToolAmmoAttrs(tool, ammoState, stats)
+
 	broadcastLaser(player, origin, endPos)
 
 	if Config.SniperDebugApplyHit == true then
@@ -708,17 +822,36 @@ requestFire.OnServerEvent:Connect(function(player: Player, claimedOrigin: Vector
 	end
 end)
 
-RunService.Heartbeat:Connect(function()
-	if Config.SniperAirDownBoostEnabled == false then
+requestReload.OnServerEvent:Connect(function(player: Player)
+	local tool = getSniperToolForFire(player)
+	if not tool then
 		return
 	end
+	local nowServer = Workspace:GetServerTimeNow()
+	local ammoState, stats = refreshAmmoStateForTool(tool, player, nowServer)
+	if ammoState.reloadEndServerTime > 0 and nowServer < ammoState.reloadEndServerTime then
+		return
+	end
+	if ammoState.ammo >= stats.magazineSize then
+		return
+	end
+	ammoState.reloadEndServerTime = nowServer + stats.reloadDuration
+	syncToolAmmoAttrs(tool, ammoState, stats)
+end)
+
+RunService.Heartbeat:Connect(function()
 	for _, plr in Players:GetPlayers() do
-		syncAirDownBoostProbe(plr, plr.Character)
+		local tool = getSniperToolForFire(plr)
+		if tool then
+			refreshAmmoStateForTool(tool, plr, Workspace:GetServerTimeNow())
+		end
+		if Config.SniperAirDownBoostEnabled ~= false then
+			syncAirDownBoostProbe(plr, plr.Character)
+		end
 	end
 end)
 
 Players.PlayerRemoving:Connect(function(player)
-	lastShotClock[player] = nil
 	airDownBoostConsumedUntilGround[player] = nil
 	sniperPreKillCharAutoLoads[player] = nil
 	destroyAirBoostProbe(player)

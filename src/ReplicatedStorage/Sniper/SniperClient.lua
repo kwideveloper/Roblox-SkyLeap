@@ -3,10 +3,14 @@
 local Debris = game:GetService("Debris")
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
 local SoundService = game:GetService("SoundService")
 local TweenService = game:GetService("TweenService")
 local UserInputService = game:GetService("UserInputService")
 local Workspace = game:GetService("Workspace")
+
+local SniperGunStats = require(script.Parent.SniperGunStats)
+local SniperAmmoHudClient = require(script.Parent.SniperAmmoHudClient)
 
 local Config = require(script.Parent.Config)
 local SniperShotVisualizer = require(script.Parent.SniperShotVisualizer)
@@ -21,6 +25,12 @@ local SniperMuzzleSmoke = require(script.Parent.SniperMuzzleSmoke)
 local SniperWeaponPartResolve = require(script.Parent.SniperWeaponPartResolve)
 
 local rng = Random.new()
+local DEBUG_PREFIX = "[SniperClientAnim]"
+local DEFAULT_RELOAD_FAILED_EASTER_EGG_DENOMINATOR = 10000
+
+local function debugLog(msg: string, ...: any)
+	print(DEBUG_PREFIX .. " " .. string.format(msg, ...))
+end
 
 local function getCasingShellTemplate(): Model?
 	local parent: Instance = ReplicatedStorage
@@ -168,6 +178,7 @@ local function getRemotes()
 	end
 	return {
 		RequestFire = folder:WaitForChild("SniperRequestFire", 10),
+		RequestReload = folder:WaitForChild("SniperRequestReload", 10),
 		LaserFx = folder:WaitForChild("SniperLaserFx", 10),
 		AudioFeedback = folder:WaitForChild("SniperAudioFeedback", 10),
 	}
@@ -275,7 +286,12 @@ local function bindTool(tool: Tool, options: { LocalPlayer: Player })
 	end
 	tool:SetAttribute("_SniperClientBound", true)
 
+	local fireHoldHeartbeatConn: RBXScriptConnection? = nil
 	tool.Destroying:Connect(function()
+		if fireHoldHeartbeatConn then
+			fireHoldHeartbeatConn:Disconnect()
+			fireHoldHeartbeatConn = nil
+		end
 		SniperLoadoutState.clearSniperTool(tool)
 	end)
 
@@ -287,7 +303,7 @@ local function bindTool(tool: Tool, options: { LocalPlayer: Player })
 	end
 
 	local remotes = getRemotes()
-	if not remotes or not remotes.RequestFire or not remotes.LaserFx or not remotes.AudioFeedback then
+	if not remotes or not remotes.RequestFire or not remotes.RequestReload or not remotes.LaserFx or not remotes.AudioFeedback then
 		warn("[Sniper] Remotes missing — ensure Remotes.server.lua ran.")
 		return
 	end
@@ -312,7 +328,51 @@ local function bindTool(tool: Tool, options: { LocalPlayer: Player })
 	end
 
 	local localPlayer = options.LocalPlayer
-	local reloadEndsAt = 0
+	local localNextAllowedShotAt = 0
+	local localReloadEndsAt = 0
+	local lastObservedReloadEndsAt = 0
+	local lastReloadSoundAt = -math.huge
+	local lastReloadAnimAt = -math.huge
+
+	local function readAmmoAndMag(): (number?, number?)
+		local ammo = tool:GetAttribute(SniperGunStats.ToolAttrAmmo)
+		local mag = tool:GetAttribute(SniperGunStats.ToolAttrMagSize)
+		if type(ammo) ~= "number" or type(mag) ~= "number" then
+			return nil, nil
+		end
+		return ammo, mag
+	end
+
+	local function isServerReloadActive(nowServer: number): boolean
+		local reloadEndsAt = tool:GetAttribute(SniperGunStats.ToolAttrReloadEndsAt)
+		return type(reloadEndsAt) == "number" and reloadEndsAt > nowServer
+	end
+
+	local function playReloadSoundIfNeeded(nowServer: number)
+		if (nowServer - lastReloadSoundAt) < 0.12 then
+			return
+		end
+		lastReloadSoundAt = nowServer
+		playOneShot2D(Config.ReloadSoundId, Config.ReloadSoundVolume)
+	end
+
+	local function playReloadAnimationIfNeeded(source: string, desiredDuration: number, nowServer: number)
+		if (nowServer - lastReloadAnimAt) < 0.12 then
+			return
+		end
+		lastReloadAnimAt = nowServer
+		debugLog("Playing reload animation (%s) duration=%.3f", source, desiredDuration)
+		SniperViewModelAnimator.notifyReload(localPlayer, desiredDuration)
+		local oneIn = SniperViewModelAnimator.getReloadFailedOneIn(localPlayer)
+		if type(oneIn) ~= "number" or oneIn < 1 then
+			oneIn = DEFAULT_RELOAD_FAILED_EASTER_EGG_DENOMINATOR
+		end
+		local easterRoll = rng:NextInteger(1, oneIn)
+		if easterRoll == 1 then
+			debugLog("Reload easter egg triggered (%s): also playing ReloadFailed (1/%d)", source, oneIn)
+			SniperViewModelAnimator.notifyReloadFailed(localPlayer, desiredDuration)
+		end
+	end
 
 	remotes.LaserFx.OnClientEvent:Connect(function(shooterUserId: number, from: Vector3, to: Vector3)
 		if shooterUserId == localPlayer.UserId then
@@ -338,6 +398,20 @@ local function bindTool(tool: Tool, options: { LocalPlayer: Player })
 		end
 	end)
 
+	tool:GetAttributeChangedSignal(SniperGunStats.ToolAttrReloadEndsAt):Connect(function()
+		local nowServer = Workspace:GetServerTimeNow()
+		local reloadEndsAt = tool:GetAttribute(SniperGunStats.ToolAttrReloadEndsAt)
+		if type(reloadEndsAt) == "number" then
+			if reloadEndsAt > nowServer and reloadEndsAt > lastObservedReloadEndsAt then
+				playReloadSoundIfNeeded(nowServer)
+				playReloadAnimationIfNeeded("server-reload-attr", math.max(0.05, reloadEndsAt - nowServer), nowServer)
+			end
+			lastObservedReloadEndsAt = reloadEndsAt
+		else
+			lastObservedReloadEndsAt = 0
+		end
+	end)
+
 	local function isReadyToFire(): boolean
 		local ch = localPlayer.Character
 		if not ch then
@@ -353,7 +427,79 @@ local function bindTool(tool: Tool, options: { LocalPlayer: Player })
 		return tool.Parent == ch and SniperFirstPersonGate.isCameraCloseForFirstPerson(localPlayer)
 	end
 
+	local function explainNotReady(): string
+		local ch = localPlayer.Character
+		if not ch then
+			return "no character"
+		end
+		local inFirstPerson = SniperFirstPersonGate.isCameraCloseForFirstPerson(localPlayer)
+		if Config.SniperVirtualInventoryEnabled then
+			local bp = localPlayer:FindFirstChildOfClass("Backpack")
+			if not bp then
+				return "no backpack"
+			end
+			if tool.Parent ~= bp then
+				return "tool not in backpack (virtual inventory mode)"
+			end
+			if not SniperLoadoutState.isSniperActive(tool) then
+				return "sniper slot inactive"
+			end
+			if not inFirstPerson then
+				return "camera not in first person range"
+			end
+			return "unknown virtual inventory reason"
+		end
+		if tool.Parent ~= ch then
+			return "tool not equipped on character"
+		end
+		if not inFirstPerson then
+			return "camera not in first person range"
+		end
+		return "unknown reason"
+	end
+
 	local inspectKey = Config.SniperViewModelInspectKeyCode or Enum.KeyCode.F
+	local reloadKey = Config.SniperReloadKeyCode or Enum.KeyCode.R
+
+	local function tryStartReload(triggerSource: string, playFailedWhenFull: boolean): boolean
+		local nowServer = Workspace:GetServerTimeNow()
+		if nowServer < localReloadEndsAt then
+			debugLog(
+				"Reload blocked (%s): local reload cooldown active (endsAt=%.3f now=%.3f)",
+				triggerSource,
+				localReloadEndsAt,
+				nowServer
+			)
+			return false
+		end
+		if isServerReloadActive(nowServer) then
+			debugLog("Reload blocked (%s): server reports active reload", triggerSource)
+			local reloadEndsAt = tool:GetAttribute(SniperGunStats.ToolAttrReloadEndsAt)
+			if type(reloadEndsAt) == "number" then
+				localReloadEndsAt = math.max(localReloadEndsAt, reloadEndsAt)
+			end
+			return false
+		end
+
+		local ammo, mag = readAmmoAndMag()
+		local gun = ViewModelClient.getGunModelForTool(tool)
+		local stats = SniperGunStats.readForClientLocal(tool, localPlayer, gun)
+		if ammo ~= nil and mag ~= nil and ammo >= mag then
+			debugLog("Reload blocked (%s): magazine full (ammo=%s mag=%s)", triggerSource, tostring(ammo), tostring(mag))
+			if playFailedWhenFull then
+				SniperViewModelAnimator.notifyReloadFailed(localPlayer, stats.reloadDuration)
+			end
+			return false
+		end
+
+		debugLog("Reload accepted (%s), requesting server + playing reload animation", triggerSource)
+		remotes.RequestReload:FireServer()
+		playReloadAnimationIfNeeded(triggerSource, stats.reloadDuration, nowServer)
+		localReloadEndsAt = nowServer + stats.reloadDuration
+		playReloadSoundIfNeeded(nowServer)
+		return true
+	end
+
 	UserInputService.InputBegan:Connect(function(input: InputObject, gameProcessed: boolean)
 		if gameProcessed then
 			return
@@ -361,10 +507,28 @@ local function bindTool(tool: Tool, options: { LocalPlayer: Player })
 		if input.UserInputType ~= Enum.UserInputType.Keyboard or input.KeyCode ~= inspectKey then
 			return
 		end
+		debugLog("Inspect key detected (%s)", tostring(inspectKey))
 		if not isReadyToFire() then
+			debugLog("Inspect blocked: %s", explainNotReady())
 			return
 		end
+		debugLog("Inspect accepted, notifying animator")
 		SniperViewModelAnimator.notifyInspect(localPlayer)
+	end)
+
+	UserInputService.InputBegan:Connect(function(input: InputObject, gameProcessed: boolean)
+		if gameProcessed then
+			return
+		end
+		if input.UserInputType ~= Enum.UserInputType.Keyboard or input.KeyCode ~= reloadKey then
+			return
+		end
+		debugLog("Reload key detected (%s)", tostring(reloadKey))
+		if not isReadyToFire() then
+			debugLog("Reload blocked: %s", explainNotReady())
+			return
+		end
+		tryStartReload("manual-key", true)
 	end)
 
 	local function tryFire()
@@ -373,8 +537,26 @@ local function bindTool(tool: Tool, options: { LocalPlayer: Player })
 			return
 		end
 
-		local now = os.clock()
-		if now < reloadEndsAt then
+		local nowServer = Workspace:GetServerTimeNow()
+		if nowServer < localNextAllowedShotAt then
+			return
+		end
+		if nowServer < localReloadEndsAt then
+			return
+		end
+		local reloadEndsAt = tool:GetAttribute(SniperGunStats.ToolAttrReloadEndsAt)
+		if type(reloadEndsAt) == "number" and reloadEndsAt > nowServer then
+			localReloadEndsAt = reloadEndsAt
+			return
+		end
+		local ammo, _mag = readAmmoAndMag()
+		if type(ammo) == "number" and ammo <= 0 then
+			tryStartReload("auto-empty-on-click", false)
+			return
+		end
+		local nextShotAt = tool:GetAttribute(SniperGunStats.ToolAttrNextShotAt)
+		if type(nextShotAt) == "number" and nextShotAt > nowServer then
+			localNextAllowedShotAt = nextShotAt
 			return
 		end
 
@@ -462,7 +644,6 @@ local function bindTool(tool: Tool, options: { LocalPlayer: Player })
 		spawnPhysicalCasing(tool, localPlayer)
 
 		playOneShot2D(Config.FireSoundId, Config.FireSoundVolume, Config.FireSoundFadeOutSeconds)
-		playOneShot2D(Config.ReloadSoundId, Config.ReloadSoundVolume)
 
 		if Config.ShellCasingSoundId ~= "" then
 			local delaySec = Config.ShellCasingDelaySeconds
@@ -485,9 +666,29 @@ local function bindTool(tool: Tool, options: { LocalPlayer: Player })
 			end)
 		end
 
-		reloadEndsAt = now + Config.ReloadSeconds
 		remotes.RequestFire:FireServer(hitscanOrigin, direction)
+		local gun = ViewModelClient.getGunModelForTool(tool)
+		local stats = SniperGunStats.readForClientLocal(tool, localPlayer, gun)
+		localNextAllowedShotAt = nowServer + stats.shotCooldown
+		if type(ammo) == "number" and ammo <= 1 then
+			localReloadEndsAt = localNextAllowedShotAt + stats.reloadDuration
+			playReloadAnimationIfNeeded("post-shot-empty", stats.reloadDuration, nowServer)
+		else
+			localReloadEndsAt = 0
+		end
 	end
+
+	-- Hold primary fire: tryFire() already enforces shotCooldown (from FireRate / ShotCooldown on Gun).
+	local fireInputHeld = false
+	fireHoldHeartbeatConn = RunService.Heartbeat:Connect(function()
+		if not fireInputHeld then
+			return
+		end
+		if not isReadyToFire() then
+			return
+		end
+		tryFire()
+	end)
 
 	if Config.SniperVirtualInventoryEnabled then
 		UserInputService.InputBegan:Connect(function(input: InputObject, gameProcessed: boolean)
@@ -497,22 +698,33 @@ local function bindTool(tool: Tool, options: { LocalPlayer: Player })
 			if input.UserInputType ~= Enum.UserInputType.MouseButton1 then
 				return
 			end
-			if not isReadyToFire() then
+			fireInputHeld = true
+			if isReadyToFire() then
+				tryFire()
+			end
+		end)
+		UserInputService.InputEnded:Connect(function(input: InputObject, _gameProcessed: boolean)
+			if input.UserInputType ~= Enum.UserInputType.MouseButton1 then
 				return
 			end
-			tryFire()
+			fireInputHeld = false
 		end)
 	else
 		tool.Activated:Connect(function()
-			if not isReadyToFire() then
-				return
+			fireInputHeld = true
+			if isReadyToFire() then
+				tryFire()
 			end
-			tryFire()
+		end)
+		tool.Deactivated:Connect(function()
+			fireInputHeld = false
 		end)
 	end
 
 	SniperLoadoutState.registerSniperTool(tool)
 	SniperWeaponBarClient.ensureStarted(localPlayer)
+	SniperAmmoHudClient.ensureStarted(localPlayer)
+	SniperAmmoHudClient.setTrackedTool(tool)
 	SniperRobloxCompanionClient.start(localPlayer)
 end
 

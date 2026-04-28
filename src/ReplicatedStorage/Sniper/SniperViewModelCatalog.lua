@@ -81,7 +81,7 @@ function Catalog.getSortedSkinNames(template: Model): { string }
 	end
 	local t: { string } = {}
 	for _, c in ipairs(skinsFolder:GetChildren()) do
-		if c:IsA("Model") then
+		if c:IsA("Model") or c:IsA("Folder") then
 			table.insert(t, c.Name)
 		end
 	end
@@ -116,22 +116,24 @@ function Catalog.validateAndNormalize(templateId: string, skinId: string): (bool
 		return false, nil, nil
 	end
 	for _, c in ipairs(skinsFolder:GetChildren()) do
-		if c:IsA("Model") and (c.Name == skinId or string.lower(c.Name) == string.lower(skinId)) then
+		if (c:IsA("Model") or c:IsA("Folder")) and (c.Name == skinId or string.lower(c.Name) == string.lower(skinId)) then
 			return true, normT, c.Name
 		end
 	end
 	return false, nil, nil
 end
 
--- Model to clone for a 3D preview: skin model, else Gun, else full template.
+-- Model to clone for a 3D preview: full template when folder-skin (needs applyGunSkinSwap), legacy skin Model, else Gun, else template.
 function Catalog.getPreviewSourceModel(template: Model, skinId: string): Model?
-	if skinId ~= nil and skinId ~= "" then
+	skinId = Appearance.normalizeId(skinId)
+	if skinId ~= "" then
 		local skinsFolder = template:FindFirstChild(Appearance.SkinsFolderName)
 		if skinsFolder and skinsFolder:IsA("Folder") then
-			for _, c in ipairs(skinsFolder:GetChildren()) do
-				if c:IsA("Model") and (c.Name == skinId or string.lower(c.Name) == string.lower(skinId)) then
-					return c
-				end
+			local root = Appearance.findSkinRootUnderSkins(skinsFolder, skinId)
+			if root and root:IsA("Folder") then
+				return template
+			elseif root and root:IsA("Model") then
+				return root
 			end
 		end
 	end
