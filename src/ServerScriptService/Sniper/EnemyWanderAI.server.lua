@@ -9,7 +9,7 @@ local Workspace = game:GetService("Workspace")
 local Config = require(ReplicatedStorage:WaitForChild("Sniper"):WaitForChild("Config"))
 
 local ENEMY_TAG = Config.EnemyTag
-local AI_TAG = Config.EnemyAiTag or "IA"
+local AI_TAG = Config.EnemyAiTag or "AI"
 local rng = Random.new()
 
 local function canEnemyMove(instance: Instance): boolean

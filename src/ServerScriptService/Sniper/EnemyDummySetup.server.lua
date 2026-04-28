@@ -12,7 +12,7 @@ local Ragdoll = require(ReplicatedStorage:WaitForChild("Ragdoll"))
 local Animations = require(ReplicatedStorage:WaitForChild("Movement"):WaitForChild("Animations"))
 
 local ENEMY_TAG = Config.EnemyTag
-local AI_TAG = Config.EnemyAiTag or "IA"
+local AI_TAG = Config.EnemyAiTag or "AI"
 local DEFAULT_HP = Config.EnemyDefaultHealth
 local RESPAWN_SECONDS = math.max(0.1, tonumber(Config.EnemyRespawnSeconds) or 5)
 local RESPAWN_MODE_GHOST = "Ghost"

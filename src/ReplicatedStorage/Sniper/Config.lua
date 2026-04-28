@@ -375,7 +375,7 @@ return {
 	-- CollectionService tag for destructible test targets (see EnemyDummySetup.server.lua)
 	EnemyTag = "Enemy",
 	-- CollectionService tag required (alongside EnemyTag) for movement/AI logic.
-	EnemyAiTag = "IA",
+	EnemyAiTag = "AI",
 	-- Seconds before an eliminated enemy becomes active again.
 	EnemyRespawnSeconds = 5,
 
